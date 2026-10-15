@@ -31,6 +31,8 @@ os.write(tty, b'\\nINSTALL_FINISHED\\n')
 '''
         wrapper = '''
 import os, runpy, sys
+# Match Python's normal script invocation: adjacent helper modules are importable.
+sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[1])))
 runtime = runpy.run_path(sys.argv[1])
 sys.exit(runtime['terminal']([sys.executable, '-c', sys.argv[2]], dict(os.environ)))
 '''
@@ -39,7 +41,7 @@ sys.exit(runtime['terminal']([sys.executable, '-c', sys.argv[2]], dict(os.enviro
         try:
             process.stdin.write(''.join(json.dumps({'text': text}) + '\n' for text in ['y\n', 'n\n', '\n', 'private-code\n']))
             process.stdin.flush()
-            self.assertEqual(process.wait(timeout=8), 0)
+            self.assertEqual(process.wait(timeout=8), 0, process.stderr.read())
             output = ''.join(json.loads(line).get('text', '') for line in process.stdout)
             self.assertIn('INSTALL_FINISHED', output)
             self.assertNotIn('private-code', output)
