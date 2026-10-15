@@ -130,19 +130,17 @@ public final class Engine {
     private static final class AgentTurn {
         final String id, runId = UUID.randomUUID().toString(), cursorId;
         final JSONObject message;
-        final int depth;
         String status = "responding";
-        AgentTurn(String id, JSONObject message, String cursorId, int depth) {
-            this.id = id; this.message = message; this.cursorId = cursorId; this.depth = depth;
+        AgentTurn(String id, JSONObject message, String cursorId) {
+            this.id = id; this.message = message; this.cursorId = cursorId;
         }
     }
     private static final class GroupRun {
         final String local;
-        final ArrayDeque<String[]> queue = new ArrayDeque<>();
-        final Set<String> initialRecipients = new HashSet<>(), edges = new HashSet<>();
+        final Set<String> queue = new LinkedHashSet<>();
         final Map<String, AgentTurn> active = new LinkedHashMap<>();
         JSONArray context;
-        int count, depth, codexFrom = -1; boolean cancelled, codexRunning;
+        int codexFrom = -1; boolean cancelled, codexRunning, initialDispatch = true;
         String current = "", model = "", effort = "", codexCursor = "", writer = "";
         GroupRun(String local) { this.local = local; }
     }
@@ -1641,7 +1639,7 @@ public final class Engine {
             draftAgents = new JSONArray();
             GroupRun run = new GroupRun(threadId); run.model = actualModel; run.effort = effort;
             run.context = new JSONArray(active.getJSONArray("messages").toString());
-            for (String id : targets) run.queue.add(new String[]{id, "0"});
+            run.queue.addAll(targets);
             group = run; persist(); advanceGroup(run); return;
         }
         if (AgentGroup.grouped(owner))
@@ -1670,9 +1668,9 @@ public final class Engine {
             draftAgents = new JSONArray();
             if (AgentGroup.grouped(active)) {
                 GroupRun run = new GroupRun(targetLocal); run.model = actualModel; run.effort = effort;
-                run.current = AgentGroup.CODEX; run.codexRunning = true; run.count = 1; run.initialRecipients.add(AgentGroup.CODEX); run.codexFrom = active.getJSONArray("messages").length() - 1;
+                run.current = AgentGroup.CODEX; run.codexRunning = true; run.codexFrom = active.getJSONArray("messages").length() - 1;
                 run.context = new JSONArray(active.getJSONArray("messages").toString()); run.codexCursor = message.optString("id");
-                for (String id : targets) if (!id.equals(AgentGroup.CODEX)) run.queue.add(new String[]{id, "0"});
+                for (String id : targets) if (!id.equals(AgentGroup.CODEX)) run.queue.add(id);
                 group = run;
             }
             if (turn != null) {
@@ -2323,7 +2321,7 @@ public final class Engine {
     private Object agentRunView() {
         GroupRun run = group;
         if (run == null || threadId.isBlank() || !run.local.equals(threadId)) return JSONObject.NULL;
-        JSONArray queue = new JSONArray(); for (String[] next : run.queue) queue.put(next[0]);
+        JSONArray queue = new JSONArray(); for (String next : run.queue) queue.put(next);
         JSONArray active = new JSONArray(); JSONObject states = obj();
         if (run.codexRunning) { active.put(AgentGroup.CODEX); try { states.put(AgentGroup.CODEX, "responding"); } catch (Exception ignored) {} }
         for (AgentTurn turn : run.active.values()) { active.put(turn.id); try { states.put(turn.id, turn.status); } catch (Exception ignored) {} }
@@ -2383,15 +2381,9 @@ public final class Engine {
         int at = messages == null ? -1 : AgentGroup.indexOf(messages, id);
         return at < 0 ? null : messages.optJSONObject(at);
     }
-    private void queueFollowUps(GroupRun run, JSONObject session, String text, String self, int depth) {
-        if (depth >= AgentGroup.MAX_DEPTH) return;
-        for (String target : AgentGroup.followUps(text, session, self)) {
-            String edge = self + ">" + target;
-            // Earlier replies do not satisfy a new explicit handoff. Limit repeated
-            // caller -> recipient edges, including requests merged into one queued reply.
-            if (!run.edges.add(edge) || run.queue.stream().anyMatch(next -> next[0].equals(target))) continue;
-            run.queue.add(new String[]{target, String.valueOf(depth + 1)});
-        }
+    private void queueFollowUps(GroupRun run, JSONObject session, String text, String self) {
+        // Coalesce only pending calls; a new completed reply can call the same peer again.
+        run.queue.addAll(AgentGroup.followUps(text, session, self));
     }
     private void updateGroupCurrent(GroupRun run) {
         run.current = run.codexRunning ? AgentGroup.CODEX : run.active.values().stream().map(turn -> turn.id).findFirst().orElse("");
@@ -2410,7 +2402,7 @@ public final class Engine {
                 }
                 // Mark the input snapshot consumed, not concurrently arriving peer answers.
                 session.put("codexCursorId", run.codexCursor);
-                queueFollowUps(run, session, reply.toString(), AgentGroup.CODEX, run.depth);
+                queueFollowUps(run, session, reply.toString(), AgentGroup.CODEX);
             }
         } catch (Exception ignored) {}
         updateGroupCurrent(run); persist(); drainAgentConsents(); advanceGroup(run);
@@ -2421,25 +2413,22 @@ public final class Engine {
         if (owner == null) { cancelGroup(run); return; }
         // Initial recipients share one snapshot. Chained mentions wait for the batch,
         // so they receive all the preceding answers rather than a partial stream.
-        if (!run.queue.isEmpty() && Integer.parseInt(run.queue.peek()[1]) > 0) {
+        if (!run.initialDispatch) {
             if (run.codexRunning || !run.active.isEmpty()) { updateGroupCurrent(run); publish(); return; }
             try { run.context = new JSONArray(owner.getJSONArray("messages").toString()); }
             catch (Exception e) { cancelGroup(run); return; }
         }
-        int batchDepth = run.queue.isEmpty() ? 0 : Integer.parseInt(run.queue.peek()[1]);
-        while (!run.queue.isEmpty() && run.count < AgentGroup.MAX_TURNS && Integer.parseInt(run.queue.peek()[1]) == batchDepth) {
-            String[] next = run.queue.poll();
-            if (batchDepth == 0 && !run.initialRecipients.add(next[0])) continue;
-            run.count++;
-            if (next[0].equals(AgentGroup.CODEX)) {
-                run.depth = batchDepth;
+        run.initialDispatch = false;
+        List<String> batch = new ArrayList<>(run.queue);
+        run.queue.clear();
+        for (String next : batch) {
+            if (next.equals(AgentGroup.CODEX)) {
                 startCodexForGroup(run, owner);
             } else {
-                JSONObject member = AgentGroup.member(owner, next[0]);
-                if (member != null) startAgent(run, owner, member, batchDepth);
+                JSONObject member = AgentGroup.member(owner, next);
+                if (member != null) startAgent(run, owner, member);
             }
         }
-        if (run.count >= AgentGroup.MAX_TURNS) run.queue.clear();
         updateGroupCurrent(run);
         if (!run.codexRunning && run.active.isEmpty()) {
             if (run.queue.isEmpty()) finishGroup(run);
@@ -2487,11 +2476,11 @@ public final class Engine {
         if (testAgentTransport != null) testAgentTransport.handle("agents.stop", obj("runId", runId), (r, e) -> {});
         else if (agentBridge != null) agentBridge.stop(runId);
     }
-    private void startAgent(GroupRun run, JSONObject owner, JSONObject member, int depth) {
+    private void startAgent(GroupRun run, JSONObject owner, JSONObject member) {
         String id = member.optString("id"), mode = member.optString("mode", "chat"), key = owner.optString("workspaceKey");
         JSONObject message = obj("id", UUID.randomUUID().toString(), "role", "assistant", "agent", id, "agentName", AgentGroup.name(id),
             "text", "", "status", "streaming", "createdAt", System.currentTimeMillis());
-        AgentTurn turn = new AgentTurn(id, message, lastMessageId(run.context), depth);
+        AgentTurn turn = new AgentTurn(id, message, lastMessageId(run.context));
         run.active.put(turn.runId, turn);
         try {
             if (!mode.equals("chat")) {
@@ -2542,7 +2531,7 @@ public final class Engine {
                     message.put("text", data.optString("text")).put("status", "complete"); appendAgentMessage(owner, turn);
                     if (member != null) member.put("nativeSession", data.optString("sessionId")).put("cursorId", turn.cursorId);
                     endAgentTurn(run, turn);
-                    queueFollowUps(run, owner, data.optString("text"), turn.id, turn.depth);
+                    queueFollowUps(run, owner, data.optString("text"), turn.id);
                     persist(); publish(); advanceGroup(run);
                 }
                 case "error" -> {

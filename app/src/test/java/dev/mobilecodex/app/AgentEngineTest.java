@@ -320,7 +320,7 @@ public class AgentEngineTest {
         completeCodex("completed");
         assertEquals(2,turns().size());assertFalse(call("state",obj()).getBoolean("busy"));
     }
-    @Test public void followUpsWaitForBatchAndAllowBoundedRepliesToEarlierParticipants()throws Exception{
+    @Test public void followUpsWaitForBatchAndAllowRepliesToEarlierParticipants()throws Exception{
         beginGroup("@claude @gemini 의견");
         assertEquals(0,turns().size());
         agentEvent("claude","final",obj("text","첫 의견 @codex 확인 @claude 자기호출","sessionId","c-native"));
@@ -336,22 +336,48 @@ public class AgentEngineTest {
         assertTrue(launch("claude").getString("prompt").contains("@claude @gemini 다시"));
         assertTrue(launch("claude").getString("prompt").contains("둘째 의견"));
         assertFalse(launch("claude").getString("prompt").contains("첫 의견"));
-        // The second follow-up depth is the limit, even for a previously unused edge.
         agentEvent("claude","final",obj("text","@gemini 더 검토","sessionId","c-native"));
         agentEvent("gemini","final",obj("text","@claude 더 검토","sessionId","g-native"));
-        assertEquals(4,launches().size());assertEquals(1,turns().size());
+        assertEquals(6,launches().size());assertEquals(1,turns().size());
+        agentEvent("claude","final",obj("text","검토 완료","sessionId","c-native"));
+        agentEvent("gemini","final",obj("text","검토 완료","sessionId","g-native"));
         assertFalse(call("state",obj()).getBoolean("busy"));assertTrue(leases().isEmpty());
     }
-    @Test public void mergedHandoffsCannotReplayTheSameCallerRecipientEdge()throws Exception{
+    @Test public void newRepliesCanRepeatHandoffsButCompletedEventsCannot()throws Exception{
         beginGroup("모두 검토해 주세요");
         notify("item/completed",obj("threadId","remote-1","item",obj("type","agentMessage","id","calls","text","@claude @gemini 검토")));
         completeCodex("completed");
         agentEvent("claude","final",obj("text","@gemini 검토","sessionId","c-native"));
         agentEvent("gemini","final",obj("text","@claude 검토","sessionId","g-native"));
         assertEquals(4,launches().size());
+        String previous=launch("claude").getString("runId");
         agentEvent("claude","final",obj("text","@gemini 다시 검토","sessionId","c-native"));
         agentEvent("gemini","final",obj("text","@claude 다시 검토","sessionId","g-native"));
-        assertEquals(4,launches().size());assertFalse(call("state",obj()).getBoolean("busy"));
+        assertEquals(6,launches().size());
+        event(obj("runId",previous,"kind","final","text","@codex @gemini 중복 이벤트","sessionId","c-native"));
+        assertEquals(0,call("state",obj()).getJSONObject("agentRun").getJSONArray("queue").length());
+        agentEvent("claude","final",obj("text","완료","sessionId","c-native"));
+        agentEvent("gemini","final",obj("text","완료","sessionId","g-native"));
+        assertEquals(6,launches().size());assertEquals(1,turns().size());
+        assertFalse(call("state",obj()).getBoolean("busy"));
+    }
+    @Test public void collaborationContinuesBeyondFormerDepthAndTurnCaps()throws Exception{
+        beginGroup("@claude 검토 시작");
+        for(int round=0;round<5;round++){
+            agentEvent("claude","final",obj("text","Claude 결과 "+round+" @gemini @gemini 검토","sessionId","c-native"));
+            assertTrue(launch("gemini").getString("prompt").contains("Claude 결과 "+round));
+            agentEvent("gemini","final",obj("text","Gemini 결과 "+round+" @codex 검토","sessionId","g-native"));
+            assertEquals(round+1,turns().size());
+            assertTrue(turns().get(round).getJSONArray("input").getJSONObject(0).getString("text").contains("Gemini 결과 "+round));
+            notify("item/completed",obj("threadId","remote-1","item",obj("type","agentMessage","id","round-"+round,"text","Codex 결과 "+round+" @claude 재검토")));
+            completeCodex("completed");
+            assertEquals(3*(round+1)+1,turns().size()+launches().size());
+            assertTrue(launch("claude").getString("prompt").contains("Codex 결과 "+round));
+            assertEquals("c-native",launch("claude").getString("nativeSession"));
+        }
+        agentEvent("claude","final",obj("text","검토 완료","sessionId","c-native"));
+        assertEquals(16,turns().size()+launches().size());
+        assertFalse(call("state",obj()).getBoolean("busy"));assertTrue(leases().isEmpty());
     }
     @Test public void providerFailureAndLateCancelledEventsCannotStopOrChangePeers()throws Exception{
         beginGroup("질문");

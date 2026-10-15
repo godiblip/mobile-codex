@@ -16,7 +16,7 @@ final class AgentGroup {
     /** Invitable agents: member id, provider id, display name. */
     static final List<String[]> AGENTS = List.of(new String[]{"claude", "claude", "Claude"}, new String[]{"gemini", "agy", "Gemini"});
     static final Set<String> MODES = Set.of("chat", "read", "write");
-    static final int MAX_TURNS = 9, MAX_DEPTH = 2, MAX_CONTEXT = 160000;
+    static final int MAX_CONTEXT = 160000;
     private static final Map<String, List<String>> ALIASES = Map.of(
         CODEX, List.of("codex", "코덱스"),
         "claude", List.of("claude", "클로드"),
