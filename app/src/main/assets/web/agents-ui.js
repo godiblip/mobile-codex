@@ -257,7 +257,21 @@
     /** Sign-in URLs in CLI output. A URL that a terminal wrapped onto the following lines is joined back. */
     function signInUrls(text) {
       const lines = String(text).replace(/\r/g, '').split('\n'), found = [];
+      const separator = line => /^\s*[-─━═_]{3,}\s*$/.test(line);
       for (let i = 0; i < lines.length; i++) {
+        if (separator(lines[i])) {
+          let end = i + 1;
+          while (end < lines.length && !separator(lines[end])) end++;
+          // agy wraps its URL, including blank lines, between horizontal rules.
+          // Wait for the closing rule so a partial streaming chunk cannot be opened.
+          if (end === lines.length) break;
+          const url = lines.slice(i + 1, end).join('').replace(/\s/g, '');
+          if (/^https:\/\/[^<>"'\x1b]+$/.test(url)) {
+            try { if (new URL(url).protocol === 'https:') found.push(url); } catch {}
+            i = end;
+          } else i = end - 1; // Adjacent rules or a heading may precede the URL block.
+          continue;
+        }
         const match = lines[i].match(/https:\/\/[^\s<>"'\x1b]+/); if (!match) continue;
         let part = match[0], url = part;
         // Join only while the URL ran to the end of its line and the next line holds URL characters alone.

@@ -26,11 +26,15 @@ APK를 여는 앱에서 **이 출처 허용**을 별도로 요구할 수 있습�
 
 Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라이언트입니다. Codex 실행 엔진과 Python·Node.js·Git을 APK에 포함해, Termux 설치나 별도 PC 서버 없이 기기에서 바로 작업할 수 있습니다.
 
-**0.2.8 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
+**0.2.9 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
 
 [APK 다운로드](https://github.com/nokryong/mobile-codex/releases) · [개발 빌드](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [문제 제보](https://github.com/nokryong/mobile-codex/issues)
 
 > OpenAI 공식 앱이 아닌 개인 프로젝트입니다. 모델 추론에는 인터넷과 Codex를 사용할 수 있는 계정이 필요합니다. Codex 프로세스와 파일·명령 도구는 Android 기기에서 실행합니다.
+
+## 0.2.9 수정
+
+- Antigravity 로그인 주소가 잘리던 문제를 수정했습니다. 터미널 구분선 사이의 주소를 빈 줄까지 이어 붙여 사용합니다. [릴리스 노트](docs/releases/0.2.9.md).
 
 ## 0.2.8 주요 업데이트
 
@@ -70,7 +74,7 @@ Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라�
 
 ### APK 받기
 
-[0.2.8 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.8)에서 **`mobile-codex-0.2.8-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
+[0.2.9 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.9)에서 **`mobile-codex-0.2.9-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
 
 | Actions 산출물 | 용도 |
 | --- | --- |
@@ -152,7 +156,7 @@ Android 10은 화면 요소를 읽고, Android 11 이상은 스크린샷도 사�
 
 ## Android에서 알아둘 점
 
-0.2.8은 정식 릴리스입니다. 기기별 동작은 Android·WebView·권한 설정에 따라 달라질 수 있습니다. 자동 테스트와 실기기 확인 범위는 [검증 기록](docs/verification.md)과 [기기 검증 목록](docs/device-validation.md)에 구분합니다.
+0.2.9은 정식 릴리스입니다. 기기별 동작은 Android·WebView·권한 설정에 따라 달라질 수 있습니다. 자동 테스트와 실기기 확인 범위는 [검증 기록](docs/verification.md)과 [기기 검증 목록](docs/device-validation.md)에 구분합니다.
 
 - **파일 접근:** Android가 허용한 범위에서 동작합니다. 다른 앱의 비공개 데이터나 시스템 보호 영역에는 접근할 수 없으며, 전체 파일 접근은 루트 권한이 아닙니다. 클라우드 문서 제공자 폴더는 일반 셸 경로 대신 문서 도구를 사용합니다.
 - **승인 방식:** 대화 입력창의 모델 옆에서 **승인 받기 / 자동 검토 / 모두 허용**을 선택합니다. 자동 검토는 승인 요청을 Codex 위험 검토기에 맡기며 파일 접근 범위와는 별도입니다.
