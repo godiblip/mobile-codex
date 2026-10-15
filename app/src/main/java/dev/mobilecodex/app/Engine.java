@@ -139,7 +139,7 @@ public final class Engine {
     private static final class GroupRun {
         final String local;
         final ArrayDeque<String[]> queue = new ArrayDeque<>();
-        final Set<String> seen = new HashSet<>(), edges = new HashSet<>();
+        final Set<String> initialRecipients = new HashSet<>(), edges = new HashSet<>();
         final Map<String, AgentTurn> active = new LinkedHashMap<>();
         JSONArray context;
         int count, depth, codexFrom = -1; boolean cancelled, codexRunning;
@@ -1670,7 +1670,7 @@ public final class Engine {
             draftAgents = new JSONArray();
             if (AgentGroup.grouped(active)) {
                 GroupRun run = new GroupRun(targetLocal); run.model = actualModel; run.effort = effort;
-                run.current = AgentGroup.CODEX; run.codexRunning = true; run.count = 1; run.seen.add(AgentGroup.CODEX); run.codexFrom = active.getJSONArray("messages").length() - 1;
+                run.current = AgentGroup.CODEX; run.codexRunning = true; run.count = 1; run.initialRecipients.add(AgentGroup.CODEX); run.codexFrom = active.getJSONArray("messages").length() - 1;
                 run.context = new JSONArray(active.getJSONArray("messages").toString()); run.codexCursor = message.optString("id");
                 for (String id : targets) if (!id.equals(AgentGroup.CODEX)) run.queue.add(new String[]{id, "0"});
                 group = run;
@@ -2387,8 +2387,10 @@ public final class Engine {
         if (depth >= AgentGroup.MAX_DEPTH) return;
         for (String target : AgentGroup.followUps(text, session, self)) {
             String edge = self + ">" + target;
-            if (run.seen.contains(target) || run.edges.contains(edge) || run.queue.stream().anyMatch(next -> next[0].equals(target))) continue;
-            run.edges.add(edge); run.queue.add(new String[]{target, String.valueOf(depth + 1)});
+            // Earlier replies do not satisfy a new explicit handoff. Limit repeated
+            // caller -> recipient edges, including requests merged into one queued reply.
+            if (!run.edges.add(edge) || run.queue.stream().anyMatch(next -> next[0].equals(target))) continue;
+            run.queue.add(new String[]{target, String.valueOf(depth + 1)});
         }
     }
     private void updateGroupCurrent(GroupRun run) {
@@ -2427,7 +2429,7 @@ public final class Engine {
         int batchDepth = run.queue.isEmpty() ? 0 : Integer.parseInt(run.queue.peek()[1]);
         while (!run.queue.isEmpty() && run.count < AgentGroup.MAX_TURNS && Integer.parseInt(run.queue.peek()[1]) == batchDepth) {
             String[] next = run.queue.poll();
-            if (!run.seen.add(next[0])) continue;
+            if (batchDepth == 0 && !run.initialRecipients.add(next[0])) continue;
             run.count++;
             if (next[0].equals(AgentGroup.CODEX)) {
                 run.depth = batchDepth;

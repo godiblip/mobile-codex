@@ -235,8 +235,9 @@ public class AgentEngineTest {
     }
     @Test public void steeringStopsOtherParticipantsAndPendingFollowUps()throws Exception{
         beginGroup("질문");
-        agentEvent("gemini","final",obj("text","참고할 의견","sessionId","g"));
+        agentEvent("gemini","final",obj("text","참고할 의견 @codex 이어서 검토","sessionId","g"));
         JSONObject state=call("state",obj());
+        assertEquals("codex",state.getJSONObject("agentRun").getJSONArray("queue").getString(0));
         call("chat.steer",obj("text","방향 변경","expectedThreadId",state.getString("threadId"),"expectedTurnId",state.getString("turnId"),"workspaceKey",""));
         assertTrue(call("state",obj()).isNull("agentRun"));
         assertTrue(leases().isEmpty());
@@ -292,7 +293,34 @@ public class AgentEngineTest {
         assertTrue(codex.contains("Claude 나중"));assertTrue(codex.contains("Gemini 먼저"));assertFalse(codex.contains("Codex 의견"));
         call("chat.stop",obj());
     }
-    @Test public void followUpsWaitForBatchAndCannotLoopBackToAlreadyCalledMembers()throws Exception{
+    @Test public void lastClaudeReplyCanRecallCodexAfterEveryoneHasAnswered()throws Exception{
+        beginGroup("서로 불러서 검토해 주세요");
+        notify("item/completed",obj("threadId","remote-1","item",obj("type","agentMessage","id","initial-codex","text","Codex 첫 의견")));
+        completeCodex("completed");
+        agentEvent("gemini","final",obj("text","Gemini 검토 결과","sessionId","g-native"));
+        agentEvent("claude","final",obj("text","Claude 검토 결과. @codex 확인해 주세요","sessionId","c-native"));
+        assertEquals("A completed initial reply must not suppress a later explicit handoff",2,turns().size());
+        String prompt=turns().get(1).getJSONArray("input").getJSONObject(0).getString("text");
+        assertTrue(prompt.contains("Claude 검토 결과"));assertTrue(prompt.contains("Gemini 검토 결과"));
+        assertFalse(prompt.contains("Codex 첫 의견"));
+        assertEquals("codex",call("state",obj()).getJSONObject("agentRun").getJSONArray("active").getString(0));
+        completeCodex("completed");
+        assertFalse(call("state",obj()).getBoolean("busy"));assertTrue(leases().isEmpty());
+    }
+    @Test public void recalledCodexWaitsForCurrentTurnAndCoalescesRequests()throws Exception{
+        beginGroup("모두 검토해 주세요");
+        agentEvent("claude","final",obj("text","Claude 의견 @codex @codex 확인","sessionId","c-native"));
+        agentEvent("gemini","final",obj("text","Gemini 의견 @codex 확인","sessionId","g-native"));
+        assertEquals(1,turns().size());
+        assertEquals(1,call("state",obj()).getJSONObject("agentRun").getJSONArray("queue").length());
+        completeCodex("completed");
+        assertEquals(2,turns().size());
+        String prompt=turns().get(1).getJSONArray("input").getJSONObject(0).getString("text");
+        assertTrue(prompt.contains("Claude 의견"));assertTrue(prompt.contains("Gemini 의견"));
+        completeCodex("completed");
+        assertEquals(2,turns().size());assertFalse(call("state",obj()).getBoolean("busy"));
+    }
+    @Test public void followUpsWaitForBatchAndAllowBoundedRepliesToEarlierParticipants()throws Exception{
         beginGroup("@claude @gemini 의견");
         assertEquals(0,turns().size());
         agentEvent("claude","final",obj("text","첫 의견 @codex 확인 @claude 자기호출","sessionId","c-native"));
@@ -303,7 +331,27 @@ public class AgentEngineTest {
         assertTrue(prompt.contains("첫 의견"));assertTrue(prompt.contains("둘째 의견"));
         notify("item/completed",obj("threadId","remote-1","item",obj("type","agentMessage","id","chain","text","@claude @gemini 다시")));
         completeCodex("completed");
-        assertEquals(2,launches().size());assertFalse(call("state",obj()).getBoolean("busy"));
+        assertEquals(4,launches().size());
+        assertEquals("c-native",launch("claude").getString("nativeSession"));
+        assertTrue(launch("claude").getString("prompt").contains("@claude @gemini 다시"));
+        assertTrue(launch("claude").getString("prompt").contains("둘째 의견"));
+        assertFalse(launch("claude").getString("prompt").contains("첫 의견"));
+        // The second follow-up depth is the limit, even for a previously unused edge.
+        agentEvent("claude","final",obj("text","@gemini 더 검토","sessionId","c-native"));
+        agentEvent("gemini","final",obj("text","@claude 더 검토","sessionId","g-native"));
+        assertEquals(4,launches().size());assertEquals(1,turns().size());
+        assertFalse(call("state",obj()).getBoolean("busy"));assertTrue(leases().isEmpty());
+    }
+    @Test public void mergedHandoffsCannotReplayTheSameCallerRecipientEdge()throws Exception{
+        beginGroup("모두 검토해 주세요");
+        notify("item/completed",obj("threadId","remote-1","item",obj("type","agentMessage","id","calls","text","@claude @gemini 검토")));
+        completeCodex("completed");
+        agentEvent("claude","final",obj("text","@gemini 검토","sessionId","c-native"));
+        agentEvent("gemini","final",obj("text","@claude 검토","sessionId","g-native"));
+        assertEquals(4,launches().size());
+        agentEvent("claude","final",obj("text","@gemini 다시 검토","sessionId","c-native"));
+        agentEvent("gemini","final",obj("text","@claude 다시 검토","sessionId","g-native"));
+        assertEquals(4,launches().size());assertFalse(call("state",obj()).getBoolean("busy"));
     }
     @Test public void providerFailureAndLateCancelledEventsCannotStopOrChangePeers()throws Exception{
         beginGroup("질문");

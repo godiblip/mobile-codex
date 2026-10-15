@@ -26,11 +26,15 @@ APK를 여는 앱에서 **이 출처 허용**을 별도로 요구할 수 있습�
 
 Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라이언트입니다. Codex 실행 엔진과 Python·Node.js·Git을 APK에 포함해, Termux 설치나 별도 PC 서버 없이 기기에서 바로 작업할 수 있습니다.
 
-**0.2.10 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
+**0.2.11 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
 
 [APK 다운로드](https://github.com/nokryong/mobile-codex/releases) · [개발 빌드](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [문제 제보](https://github.com/nokryong/mobile-codex/issues)
 
 > OpenAI 공식 앱이 아닌 개인 프로젝트입니다. 모델 추론에는 인터넷과 Codex를 사용할 수 있는 계정이 필요합니다. Codex 프로세스와 파일·명령 도구는 Android 기기에서 실행합니다.
+
+## 0.2.11 수정
+
+- 이미 답한 참가자를 다시 멘션하면 무시되던 문제를 수정했습니다. 첫 답변들이 끝난 뒤 Claude가 `@codex`로 Codex를 다시 호출할 수 있습니다. 중복·무한 반복 제한은 유지합니다. [릴리스 노트](docs/releases/0.2.11.md).
 
 ## 0.2.10 업데이트
 
@@ -75,7 +79,7 @@ Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라�
 
 ### APK 받기
 
-[0.2.10 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.10)에서 **`mobile-codex-0.2.10-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
+[0.2.11 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.11)에서 **`mobile-codex-0.2.11-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
 
 | Actions 산출물 | 용도 |
 | --- | --- |
