@@ -3,9 +3,9 @@
 Mobile Codex is an independent client; it is not an official OpenAI Android application.
 
 The APK bundles a pinned Android port of Codex:
-- Source: https://github.com/DioNanos/codex-termux/tree/v0.155.1
+- Source: https://github.com/DioNanos/codex-termux/tree/v0.162.1-termux.1
 - Upstream: https://github.com/openai/codex
-- Package: `@mmmbuto/codex-cli-termux@0.155.1`
+- Package: `@mmmbuto/codex-cli-termux@0.162.1-termux.1`
 - The package's original `LICENSE` and `NOTICE` are copied into `assets/runtime/` at build time.
 - A fixed-width helper executable name change is applied for Android APK native-library packaging. See `tools/prepare_runtime.py` and README.
 - The original archive integrity and the resulting packaged file hashes are recorded separately.
@@ -24,10 +24,16 @@ App license notices are also packaged under `assets/legal/`.
 
 ## Optional Linux runtime
 
-PRoot 5.1.107.95 (GPL version 2 `COPYING` file), libtalloc 2.4.3 (LGPL version 3 `LICENSE` file), and libandroid-shmem 0.7 (three-clause BSD `LICENSE` file) are included as small Android native components. Their exact package archives, source archives, and Termux recipes are pinned in `tools/devtools-lock.json` and included in the corresponding-source process above. PRoot source: https://github.com/termux/proot. Termux build recipes: https://github.com/termux/termux-packages.
+PRoot 5.1.107.96 (GPL version 2 `COPYING` file), libtalloc 2.5.0 (LGPL version 3 `LICENSE` file), and libandroid-shmem 0.7 (three-clause BSD `LICENSE` file) are included as small Android native components. Their exact package archives, source archives, and Termux recipes are pinned in `tools/devtools-lock.json` and included in the corresponding-source process above. PRoot source: https://github.com/termux/proot. Termux build recipes: https://github.com/termux/termux-packages.
 
 The optional Arch Linux ARM root filesystem is downloaded only at the user's request from the official Termux proot-distro v4.29.0 release. It is not bundled in the APK. Its URL, SHA-256, size, and provenance are pinned in `app/src/main/assets/linux/manifest.json`. The distribution's packages retain their own licenses and source obligations; their notices and package metadata remain in the installed root filesystem. Upstream: https://github.com/termux/proot-distro/releases/tag/v4.29.0 and https://archlinuxarm.org.
 
 ## Chat icon vocabulary and renderer adaptation
 
 The Chat WebView icon renderer uses the vocabulary and category mappings from nokryong/ChatGPT-DCCon-Renderer-Optimized, userscript.js at commit 98e9aee413c2ff6a91531f46f4a92da008b19a95, integrated at the same repository owner's request. Source: https://github.com/nokryong/ChatGPT-DCCon-Renderer-Optimized. Public icon artwork is read from the owner's Firebase Storage bucket with the existing packaged artwork as fallback. No Firebase authentication credentials or SDK are bundled.
+
+## Invited agents
+
+The participant mention rules (`AgentGroup.java`) and provider event normalization (`assets/rooms/provider-events.cjs`) are adapted from CodePet (MIT), https://github.com/SeeUSoon93/desktop-pet at commit eaa10df8b3fb0ab0d6f796f618c158ab5acb4cf8. The original license is included in `assets/rooms/CODEPET-LICENSE`.
+
+Claude Code and Google Antigravity CLI are optional, separately downloaded through their official installers at the user's request. They are not included in the APK and remain subject to their respective license and account terms.

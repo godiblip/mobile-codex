@@ -207,14 +207,14 @@ async function checkTaskStop(page) {
  assert.equal(await page.locator('#stop').isVisible(),false,'Completed tasks return to compact idle input');
  await page.locator('#prompt').fill(draft);await page.locator('#prompt').blur();
 }
-async function checkConsultationMenu(page) {
+async function checkAttachmentMenu(page) {
  const draft=await page.locator('#prompt').inputValue();
  const options=()=>page.evaluate(()=>({model:document.getElementById('model').value,effort:document.getElementById('effort').value,permissions:document.getElementById('permissions').value,approval:document.getElementById('approval-mode').value,fast:document.getElementById('fast-mode').getAttribute('aria-pressed')}));
  const before=await options(), callCount=await page.evaluate(()=>fixtureCalls.length);
  await page.locator('#add-attachment').click();
  await page.locator('#composer-add-menu').waitFor({state:'visible'});
  const viewport=page.viewportSize();
- for(const id of ['composer-add-menu','composer-attach','composer-consult-pro']) {
+ for(const id of ['composer-add-menu','composer-attach']) {
   const box=await page.locator('#'+id).boundingBox();
   assert.ok(box&&box.x>=0&&box.x+box.width<=viewport.width+1&&box.y>=0&&box.y+box.height<=viewport.height+1,`${id} fits the viewport`);
   if(id!=='composer-add-menu')assert.ok(box.width>=43.5&&box.height>=43.5,`${id} keeps a 44px target`);
@@ -224,19 +224,9 @@ async function checkConsultationMenu(page) {
  assert.equal(await page.locator('#add-attachment').evaluate(el=>el===document.activeElement),true);
  await page.locator('#add-attachment').click();await page.mouse.click(viewport.width-2,2);
  assert.equal(await page.locator('#composer-add-menu').isVisible(),false,'Outside clicks dismiss the menu');
- await page.locator('#add-attachment').click();await page.locator('#composer-consult-pro').click();
- const chip=page.locator('.pro-consultation-chip');await chip.waitFor({state:'visible'});
- assert.deepEqual(await options(),before,'Selecting Pro preserves Codex settings');
- assert.equal(await page.evaluate(()=>fixtureCalls.length),callCount,'Selecting Pro performs no native request');
- const remove=await chip.locator('button').boundingBox();assert.ok(remove&&remove.width>=43.5&&remove.height>=43.5,'Pro chip removal has a 44px target');
- await chip.locator('button').click();assert.equal(await chip.count(),0);
- await page.locator('#add-attachment').click();await page.locator('#composer-consult-pro').click();
- await page.locator('#prompt').fill('Review this task with Pro.');await page.locator('#send').click();
- await page.waitForFunction(()=>fixtureCalls.some(call=>call.action==='chat.send'&&call.args.consultPro===true));
- await page.waitForFunction(()=>!document.querySelector('.pro-consultation-chip'));
- assert.equal(await chip.count(),0,'Successful sends consume the one-time consultation');
- assert.equal(await page.evaluate(()=>fixtureCalls.some(call=>call.action==='chat.pro.send')),false);
+ assert.equal(await page.locator('#composer-consult-pro, #mode-chat, #mode-codex, [data-settings-tab=sync]').count(),0);
  assert.deepEqual(await options(),before);
+ assert.equal(await page.evaluate(()=>fixtureCalls.length),callCount,'Opening the attachment menu performs no native request');
  await page.locator('#prompt').fill(draft);await page.locator('#prompt').blur();
 }
 async function ensureSidebarOpen(page) {
@@ -317,7 +307,7 @@ async function checkSidebar(page,width) {
  if(width===320) {
   await page.locator('#settings').click();await page.locator('#settings-dialog').waitFor({state:'visible'});
   const names=['general','personal','account','tools','advanced','updates'];
-  assert.deepEqual(await page.locator('[data-settings-tab]').evaluateAll(items=>items.map(el=>el.dataset.settingsTab)),names,'all six settings tabs exist at 320px');
+  assert.deepEqual(await page.locator('[data-settings-tab]').evaluateAll(items=>items.map(el=>el.dataset.settingsTab)),names,'all current settings tabs exist at 320px');
   for(const name of names) {
    const tab=page.locator(`[data-settings-tab="${name}"]`);
    await tab.click();
@@ -339,11 +329,7 @@ async function checkSidebar(page,width) {
 }
 async function checkModeSwitch(page,width,theme) {
  await ensureSidebarOpen(page);
- const toggle=await page.locator('#sidebar .mode-switch').boundingBox();
- const logo=await page.locator('#sidebar .brand').boundingBox();
- assert.ok(toggle.x>=logo.x+logo.width,'Mode switch is beside the logo');
- assert.ok(toggle.width<=180,'Mode switch stays compact');
- assert.equal(await page.locator('.topbar .mode-switch').count(),0);
+ assert.equal(await page.locator('.mode-switch, #mode-chat, #mode-codex').count(),0);
  const headerBefore=await page.locator('.sidebar-top').boundingBox();
  await page.locator('.sidebar-scroll').evaluate(el=>el.scrollTop=el.scrollHeight);
  const headerAfter=await page.locator('.sidebar-top').boundingBox();
@@ -357,11 +343,6 @@ async function checkModeSwitch(page,width,theme) {
  assert.equal(await page.locator('#sessions').isVisible(),false);
  await page.locator('#toggle-history').click();
  await page.screenshot({path:path.join(output,`codex-sidebar-${width}-${theme}.png`)});
- const draft=await page.locator('#prompt').inputValue();
- await page.locator('#mode-chat').click();
- await page.waitForTimeout(200);
- assert.equal(await page.locator('#prompt').inputValue(),draft,'Opening native Chat preserves Codex draft');
- assert.equal(await page.locator('body').evaluate(el=>el.classList.contains('chat-mode')),false);
 }
 async function checkLinuxSettings(page,width,theme,language) {
  await ensureSidebarOpen(page);
@@ -396,7 +377,7 @@ async function checkLinuxSettings(page,width,theme,language) {
    const longHeader=await checkLongMessageClearance(page,width,height);
    await checkCompactComposer(page);
    await checkTaskStop(page);
-   await checkConsultationMenu(page);
+   await checkAttachmentMenu(page);
    const layout=await checkComposer(page);const fixedSidebar=await checkFixedSidebar(page,width,height);const sidebar=width<=393?await checkSidebar(page,width):null;
    const sendsBeforeFast=await page.evaluate(()=>fixtureCalls.filter(call=>call.action==='chat.send').length);
    await page.locator('#prompt').focus();await page.locator('#fast-mode').click();
@@ -425,7 +406,7 @@ async function checkLinuxSettings(page,width,theme,language) {
     await page.locator('#prompt').fill('A longer draft\nwith several lines\nthat stays above the keyboard.');
     await checkComposer(page);
     await checkTaskStop(page);
-    await checkConsultationMenu(page);
+    await checkAttachmentMenu(page);
     result.keyboardHeader=await checkFirstMessageBelowHeader(page,`keyboard conversation ${width}×430`);
     result.keyboardSidebar=await checkFixedSidebar(page,width,430);
     await page.locator('#prompt').focus();

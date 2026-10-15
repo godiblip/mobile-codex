@@ -72,223 +72,42 @@ function chip(w) { return w.document.querySelector('.pro-consultation-chip'); }
 function chatCalls(calls) { return calls.filter(call => /^chat\.(send|steer|pro\.)/.test(call.action)); }
 function storageOf(w) { return Object.fromEntries(Object.keys(w.localStorage).map(key => [key, w.localStorage.getItem(key)])); }
 
-test('the plus menu supports keyboard selection and Escape without sending or picking a file', async () => {
-  const {w, calls} = setup(); await tick();
-  const d = w.document, trigger = d.getElementById('add-attachment'), menu = d.getElementById('composer-add-menu');
-  assert.equal(menu.getAttribute('role'), 'menu');
-  assert.equal(menu.hidden, true); assert.equal(trigger.getAttribute('aria-expanded'), 'false');
-  trigger.focus(); trigger.click();
-  assert.equal(menu.hidden, false); assert.equal(trigger.getAttribute('aria-expanded'), 'true');
-  assert.equal(d.activeElement, d.getElementById('composer-attach'));
-  key(w, 'ArrowDown'); assert.equal(d.activeElement, d.getElementById('composer-consult-pro'));
-  key(w, 'Enter'); await tick();
-  assert.match(chip(w).textContent, /Pro자문/); assert.equal(menu.hidden, true);
-  assert.equal(chatCalls(calls).length, 0); assert.equal(calls.some(call => call.action === 'attachments.pick'), false);
-  trigger.focus(); trigger.click(); key(w, 'Escape');
-  assert.equal(menu.hidden, true); assert.equal(d.activeElement, trigger);
-  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+test('retired Chat and Pro controls never return through saved consultation preferences', async () => {
+  const {w,calls}=setup();await tick();const d=w.document;
+  for(const id of ['mode-chat','mode-codex','composer-consult-pro','chat-account-login']) assert.equal(d.getElementById(id),null);
+  const scope=Object.keys(w.localStorage).find(k=>k.includes('draft'));
+  w.localStorage.setItem((scope||'draft')+':context:consult-pro:"profile-a"','true');
+  d.querySelector('[data-settings-tab=account]').click();await tick();
+  type(w,'Codex only');submit(w);await tick();
+  assert.equal(chatCalls(calls).at(-1).args.consultPro,undefined);
+  assert.equal(calls.some(c=>c.action.startsWith('chat.pro.')||c.action==='ui.chat.open'||c.action==='ui.chatLogin'),false);
 });
 
-test('file attachment remains a separate plus-menu action', async () => {
-  const {w, calls} = setup({'attachments.pick':() => ({receiptId:'file-receipt', attachments:[{id:'file', name:'notes.txt'}]})});
-  await tick(); const d = w.document;
-  d.getElementById('add-attachment').click(); await tick();
-  assert.equal(calls.some(call => call.action === 'attachments.pick'), false, 'Opening the menu never starts the native picker');
-  d.getElementById('composer-attach').click(); await tick();
-  assert.equal(calls.filter(call => call.action === 'attachments.pick').length, 1);
-  assert.match(d.getElementById('draft-context').textContent, /notes\.txt/);
-  assert.equal(chip(w), null); assert.equal(chatCalls(calls).length, 0);
+test('models and reasoning show and send exact choices instead of unnamed defaults', async () => {
+  const {w,calls}=setup({},{snapshot:{models:[{...codexModel,defaultReasoningEffort:'high'}]}});await tick();const d=w.document;
+  assert.equal(d.getElementById('model').value,'codex-model');assert.equal(d.getElementById('effort').value,'high');
+  assert.doesNotMatch(d.getElementById('model').textContent,/기본/);assert.doesNotMatch(d.getElementById('effort').textContent,/기본/);
+  type(w,'Explicit settings');submit(w);await tick();
+  assert.equal(chatCalls(calls).at(-1).args.model,'codex-model');assert.equal(chatCalls(calls).at(-1).args.effort,'high');
 });
 
-test('consultation selection preserves Codex model, reasoning, Fast and native permissions', async () => {
-  const {w, calls, snapshot} = setup(); await tick(); const d = w.document;
-  w.mobileCodexEvent('state', {...snapshot, permissions:'danger-full-access', approvalMode:'allow-all'});
-  d.getElementById('model').value = 'codex-model'; d.getElementById('model').dispatchEvent(new w.Event('change'));
-  d.getElementById('effort').value = 'high'; d.getElementById('effort').dispatchEvent(new w.Event('change'));
-  d.getElementById('fast-mode').click();
-  const baseline = calls.length;
-  selectConsultation(w); await tick();
-  assert.equal(d.getElementById('model').value, 'codex-model'); assert.equal(d.getElementById('effort').value, 'high');
-  assert.equal(d.getElementById('fast-mode').getAttribute('aria-pressed'), 'true');
-  assert.equal(d.getElementById('permissions').value, 'danger-full-access');
-  assert.equal(d.getElementById('permissions').disabled, false); assert.equal(d.getElementById('effort').disabled, false);
-  assert.equal(calls.slice(baseline).some(call => /^(chat\.|permissions\.|approvals\.|config\.)/.test(call.action)), false);
-  chip(w).querySelector('button').click(); await tick(); assert.equal(chip(w), null);
-  assert.equal(d.getElementById('fast-mode').getAttribute('aria-pressed'), 'true');
+test('missing model or reasoning data is visible and voice has no send reminder', async () => {
+  const {w,calls}=setup({},{snapshot:{models:[]}});await tick();const d=w.document;
+  assert.equal(d.getElementById('model').value,'');assert.match(d.getElementById('model').textContent,/조회 필요/);
+  assert.equal(d.getElementById('effort').disabled,true);assert.match(d.getElementById('effort').textContent,/정보 없음/);
+  assert.doesNotMatch(d.getElementById('dictation-panel')?.textContent||'',/확인.*보내/);
+  assert.equal(d.getElementById('voice-input').title,'음성 입력');
+  type(w,'Keep draft until models are known');submit(w);await tick();
+  assert.equal(chatCalls(calls).length,0);assert.equal(d.getElementById('prompt').value,'Keep draft until models are known');
 });
 
-test('a selected consultation sends exactly one flagged Codex request and consumes its flag on success', async () => {
-  let finish;
-  const {w, calls} = setup({'chat.send':() => new Promise(resolve => {finish = resolve;})}); await tick(); const d = w.document;
-  d.getElementById('model').value = 'codex-model'; d.getElementById('model').dispatchEvent(new w.Event('change'));
-  d.getElementById('effort').value = 'high'; d.getElementById('effort').dispatchEvent(new w.Event('change'));
-  d.getElementById('fast-mode').click();
-  selectConsultation(w); type(w, '이 변경을 Pro 검토 후 적용해 줘'); submit(w); await tick(); submit(w); await tick();
-  const sent = chatCalls(calls); assert.equal(sent.length, 1); assert.equal(sent[0].action, 'chat.send');
-  assert.equal(sent[0].args.consultPro, true); assert.equal(sent[0].args.model, 'codex-model');
-  assert.equal(sent[0].args.effort, 'high'); assert.equal(sent[0].args.fastMode, true);
-  assert.equal(sent[0].args.expectedThreadId, 'thread-a'); assert.equal(sent[0].args.workspaceKey, 'project-a');
-  d.getElementById('add-attachment').click();
-  assert.equal(d.getElementById('composer-consult-pro').disabled, true, 'Selection stays stable during the submitted request');
-  finish({}); await tick();
-  assert.equal(d.getElementById('prompt').value, ''); assert.equal(chip(w), null);
-  type(w, '다음 일반 요청'); submit(w); await tick();
-  assert.equal(chatCalls(calls).at(-1).args.consultPro, false);
-  finish({}); await tick();
-  assert.equal(calls.some(call => call.action === 'chat.pro.send'), false);
-});
-
-test('consultation can be selected while Codex works and follows the exact steering target', async () => {
-  const {w, calls, snapshot} = setup(); await tick();
-  w.mobileCodexEvent('state', {...snapshot, busy:true, turnId:'running-turn'});
-  selectConsultation(w); type(w, 'Pro에게 설계를 검토받고 계속해');
-  assert.equal(w.document.getElementById('send').disabled, false);
-  submit(w); await tick();
-  const sent = chatCalls(calls); assert.equal(sent.length, 1); assert.equal(sent[0].action, 'chat.steer');
-  assert.equal(sent[0].args.consultPro, true); assert.equal(sent[0].args.expectedTurnId, 'running-turn');
-  assert.equal(sent[0].args.expectedThreadId, 'thread-a'); assert.equal(sent[0].args.workspaceKey, 'project-a');
-});
-
-test('active Pro work blocks another consultation but a pending chip can be removed for plain steering', async () => {
-  const {w, calls, snapshot} = setup(); await tick(); selectConsultation(w); type(w, '이 추가 지시를 계속해');
-  w.mobileCodexEvent('state', {...snapshot, busy:true, proBusy:true, turnId:'running-turn'});
-  const d = w.document;
-  d.getElementById('add-attachment').click();
-  assert.equal(d.getElementById('composer-consult-pro').disabled, true);
-  d.getElementById('composer-consult-pro').click();
-  assert.equal(chatCalls(calls).length, 0);
-  assert.equal(d.getElementById('send').disabled, true, 'The flagged draft cannot submit a duplicate consultation');
-  const remove = chip(w).querySelector('button'); assert.equal(remove.disabled, false); remove.click(); await tick();
-  assert.equal(chip(w), null); assert.equal(d.getElementById('send').disabled, false);
-  submit(w); await tick();
-  const sent = chatCalls(calls); assert.equal(sent.length, 1); assert.equal(sent[0].action, 'chat.steer');
-  assert.equal(sent[0].args.consultPro, false); assert.equal(sent[0].args.expectedTurnId, 'running-turn');
-});
-
-test('an unavailable consultation blocks selection and flagged sends while preserving removable drafts and plain requests', async () => {
-  for (const pendingConsultation of [false, true]) {
-    const {w, calls, snapshot} = setup(); await tick();
-    if (pendingConsultation) selectConsultation(w);
-    w.mobileCodexEvent('state', {...snapshot, consultProAvailable:false});
-    const d = w.document; type(w, '이 일반 요청은 계속할 수 있어야 해');
-    d.getElementById('add-attachment').click();
-    assert.equal(d.getElementById('composer-consult-pro').disabled, true);
-    d.getElementById('composer-consult-pro').click();
-    assert.equal(!!chip(w), pendingConsultation); assert.equal(chatCalls(calls).length, 0);
-    if (pendingConsultation) {
-      assert.equal(d.getElementById('send').disabled, true);
-      submit(w); await tick(); assert.equal(chatCalls(calls).length, 0, 'Keyboard submission cannot bypass consultation availability');
-      const remove = chip(w).querySelector('button'); assert.equal(remove.disabled, false); remove.click();
-    }
-    assert.equal(chip(w), null); assert.equal(d.getElementById('send').disabled, false);
-    submit(w); await tick();
-    const sent = chatCalls(calls); assert.equal(sent.length, 1); assert.equal(sent[0].action, 'chat.send');
-    assert.equal(sent[0].args.consultPro, false);
-  }
-});
-
-test('failed sends and a reload retain both consultation intent and the draft for retry', async () => {
-  const {w, calls, snapshot} = setup({'chat.send':() => {throw new Error('offline');}}); await tick();
-  selectConsultation(w); type(w, '작성하던 검토 요청'); submit(w); await tick();
-  assert.equal(w.document.getElementById('prompt').value, '작성하던 검토 요청');
-  assert.ok(chip(w)); assert.match(w.document.getElementById('toast').textContent, /offline/);
-  assert.equal(chatCalls(calls)[0].args.consultPro, true);
-  const restored = setup({}, {snapshot, storage:storageOf(w)}); await tick();
-  assert.equal(restored.w.document.getElementById('prompt').value, '작성하던 검토 요청'); assert.ok(chip(restored.w));
-  submit(restored.w); await tick(); assert.equal(chatCalls(restored.calls)[0].args.consultPro, true);
-  assert.equal(chip(restored.w), null);
-});
-
-test('consultation drafts are isolated by workspace, thread and stable account identity', async () => {
-  const {w, snapshot} = setup(); await tick(); selectConsultation(w); type(w, 'A 검토 초안');
-  const otherProject = {...snapshot, workspace:{...snapshot.workspace, key:'project-b', name:'Project B'}, cwd:'/test/other'};
-  w.mobileCodexEvent('state', otherProject); assert.equal(chip(w), null);
-  w.mobileCodexEvent('state', {...snapshot, threadId:'thread-b'}); assert.equal(chip(w), null);
-  w.mobileCodexEvent('state', {...snapshot, ...profile('profile-b')}); assert.equal(chip(w), null, 'Same-email saved accounts remain distinct');
-  selectConsultation(w); chip(w).querySelector('button').click();
-  w.mobileCodexEvent('state', snapshot); assert.ok(chip(w));
-  w.mobileCodexEvent('state', {...snapshot, account:{...snapshot.account, planType:'Pro'}});
-  assert.ok(chip(w), 'Refreshing account metadata does not change the saved-profile identity');
-  assert.equal(w.document.getElementById('prompt').value, 'A 검토 초안');
-});
-
-test('success consumes the submitted consultation while preserving text typed during the request', async () => {
-  let finish;
-  const {w, calls} = setup({'chat.send':() => new Promise(resolve => {finish = resolve;})}); await tick();
-  selectConsultation(w); type(w, '보낼 검토 요청'); submit(w); await tick();
-  type(w, '다음 요청 작성 중'); finish({}); await tick();
-  assert.equal(w.document.getElementById('prompt').value, '다음 요청 작성 중'); assert.equal(chip(w), null);
-  submit(w); await tick(); assert.equal(chatCalls(calls).at(-1).args.consultPro, false); finish({}); await tick();
-});
-
-test('a first send transfers consultation intent into the created thread and consumes both draft scopes', async () => {
-  let finish;
-  const {w, snapshot} = setup({'chat.send':() => new Promise(resolve => {finish = resolve;})}, {snapshot:{threadId:''}});
-  await tick(); selectConsultation(w); type(w, '처음 보낼 자문 요청'); submit(w); await tick();
-  const created = {...snapshot, threadId:'created-thread', busy:true, turnId:'first-turn'};
-  w.mobileCodexEvent('state', created);
-  assert.ok(chip(w), 'The request-created thread retains the pending consultation until acceptance');
-  finish({}); await tick();
-  assert.equal(chip(w), null); assert.equal(w.document.getElementById('prompt').value, '');
-  w.mobileCodexEvent('state', snapshot);
-  assert.equal(chip(w), null, 'The original new-thread draft cannot restore the submitted consultation');
-  assert.equal(w.document.getElementById('prompt').value, '');
-  const reopened = setup({}, {snapshot:{...created, busy:false}, storage:storageOf(w)}); await tick();
-  assert.equal(chip(reopened.w), null, 'Reloading the created thread cannot restore the submitted consultation');
-  assert.equal(reopened.w.document.getElementById('prompt').value, '');
-});
-
-test('a removed project migrates consultation intent into the general draft only for the same account', async () => {
-  for (const changedAccount of [false, true]) {
-    const {w, snapshot} = setup(); await tick(); selectConsultation(w); type(w, '삭제된 프로젝트의 자문 초안');
-    const general = {
-      ...snapshot, workspace:{selected:false, key:'', name:'일반'}, cwd:'/test/general',
-      ...(changedAccount ? profile('profile-b') : {})
-    };
-    w.mobileCodexEvent('state', general);
-    assert.equal(!!chip(w), !changedAccount, 'Consultation intent migrates within its originating account only');
-    if (!changedAccount) {
-      assert.equal(w.document.getElementById('prompt').value, '삭제된 프로젝트의 자문 초안');
-      const restored = setup({}, {snapshot:general, storage:storageOf(w)}); await tick();
-      assert.ok(chip(restored.w), 'Migration persists the consultation flag in the general draft');
-    }
-    w.mobileCodexEvent('state', snapshot);
-    assert.ok(chip(w), 'The original project draft retains its own consultation intent');
-  }
-});
-
-test('project removal preserves an existing plain general draft without attaching unrelated consultation intent', async () => {
-  const generalScope = 'draft:' + JSON.stringify(['', 'thread-a']);
-  const {w, snapshot} = setup({}, {storage:{[generalScope]:'이미 작성하던 일반 요청'}}); await tick();
-  selectConsultation(w); type(w, '프로젝트에서만 검토받을 요청');
-  w.mobileCodexEvent('state', {...snapshot, workspace:{selected:false, key:'', name:'일반'}, cwd:'/test/general'});
-  assert.equal(w.document.getElementById('prompt').value, '이미 작성하던 일반 요청');
-  assert.equal(chip(w), null, 'An unrelated retained draft must not acquire authorization for a Pro consultation');
-  w.mobileCodexEvent('state', snapshot);
-  assert.ok(chip(w)); assert.equal(w.document.getElementById('prompt').value, '프로젝트에서만 검토받을 요청');
-});
-
-test('a late send acknowledgement clears only the originating account consultation', async () => {
-  let finish;
-  const {w, snapshot} = setup({'chat.send':() => new Promise(resolve => {finish = resolve;})}); await tick();
-  const otherAccount = {...snapshot, ...profile('profile-b')};
-  w.mobileCodexEvent('state', otherAccount); selectConsultation(w);
-  w.mobileCodexEvent('state', snapshot); selectConsultation(w); type(w, 'A에게 보낼 검토 요청'); submit(w); await tick();
-  w.mobileCodexEvent('state', otherAccount); assert.ok(chip(w));
-  finish({}); await tick(); assert.ok(chip(w), 'Account B did not submit its consultation');
-  w.mobileCodexEvent('state', snapshot); assert.equal(chip(w), null, 'Account A acknowledgement consumes only its submitted flag');
-});
-
-test('legacy synthetic model preferences fall back to the runtime default and never appear in the picker', async () => {
-  const scope = 'draft:' + JSON.stringify(['project-a', 'thread-a']);
-  const {w, calls} = setup({}, {storage:{[scope]:'기존 초안', [scope + ':options']:JSON.stringify({model:'chatgpt-web:gpt-6-pro', effort:'pro-auto', fastMode:true})}});
-  await tick(); const d = w.document;
-  assert.equal(d.getElementById('model').value, ''); assert.equal(d.getElementById('effort').disabled, false);
-  assert.equal(d.querySelector('#model-list input[value="chatgpt-web:gpt-6-pro"]'), null);
-  assert.equal([...d.getElementById('model').options].some(option => option.value === 'chatgpt-web:gpt-6-pro'), false);
-  assert.equal(chip(w), null, 'Legacy model selection does not silently authorize a consultation');
-  submit(w); await tick(); const sent = chatCalls(calls)[0];
-  assert.equal(sent.action, 'chat.send'); assert.equal(sent.args.model, ''); assert.equal(sent.args.consultPro, false);
+test('model refresh preserves an explicit missing selection without silently sending another model', async () => {
+  const {w,calls,snapshot}=setup();await tick();const d=w.document;
+  d.getElementById('model').dispatchEvent(new w.Event('change'));await tick();
+  w.mobileCodexEvent('state',{...snapshot,models:[{id:'replacement',isDefault:true}]});
+  assert.equal(d.getElementById('model').value,'codex-model');assert.match(d.getElementById('model-list').textContent,/목록 확인 필요/);
+  type(w,'Preserve my choice');submit(w);await tick();assert.equal(chatCalls(calls).length,0);
+  w.mobileCodexEvent('state',snapshot);submit(w);await tick();assert.equal(chatCalls(calls).at(-1).args.model,'codex-model');
 });
 
 test('consultation answers have a safe reply card, optional prompt details and reply-only copy', async () => {
@@ -323,16 +142,4 @@ test('legacy Pro labels remain readable beside the new consultation answer card'
   assert.match(d.querySelector('[data-id="legacy-user"]').textContent, /다시 보내기 전에/);
   assert.match(d.querySelector('[data-id="legacy-answer"]').textContent, /ChatGPT Pro/);
   assert.match(d.querySelector('[data-id="new-answer"]').textContent, /Pro 검토 답변/);
-});
-
-test('an unavailable consultation explains the native reason in the add menu', async () => {
-  const {w, snapshot} = setup(); await tick();
-  const d = w.document, reason = 'Pro 문의 MCP 서버(mobile_codex_pro)가 시작되지 않았습니다.';
-  w.mobileCodexEvent('state', {...snapshot, consultProAvailable:false, consultProUnavailableReason:reason});
-  d.getElementById('add-attachment').click();
-  const note = d.getElementById('composer-consult-note');
-  assert.equal(note.hidden, false); assert.equal(note.textContent, reason);
-  assert.equal(d.getElementById('composer-consult-pro').title, reason);
-  w.mobileCodexEvent('state', {...snapshot, consultProAvailable:false});
-  assert.equal(note.textContent, '현재 Pro 자문을 사용할 수 없습니다.');
 });

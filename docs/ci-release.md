@@ -9,9 +9,8 @@ Android tasks stop on failure too; report uploads are the only always-run steps.
 Each repository builds and publishes its own main-branch commit after full
 validation, for both pushes and manual runs. The private repository does not
 wait for a public release or copy its APK. Release tags, assets and notes belong
-to the repository where the workflow runs. Both builds reuse the nokryong OAuth
-app through the public `MOBILE_CODEX_GITHUB_CLIENT_ID` repository variable;
-no separate OAuth app is needed for the private repository.
+to the repository where the workflow runs. Android GitHub project sync has been
+removed, so builds no longer need a GitHub OAuth application variable.
 
 Prepared runtimes and corresponding-source archives use exact content keys.
 Native/package inputs and packaging scripts are part of those keys. Prepared

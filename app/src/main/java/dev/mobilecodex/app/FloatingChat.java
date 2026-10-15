@@ -274,7 +274,7 @@ final class FloatingChat implements Engine.Ui {
             else if(name.equals("state")) {
                 String next=scope(copy); if(!next.equals(scope)) { saveDraft(); scope=next; binding=true; input.setText(drafts.getString(draftKey(scope),"")); binding=false; }
                 state=copy; JSONArray messages=copy.optJSONArray("messages"); StringBuilder text=new StringBuilder();
-                if(messages!=null) for(int i=Math.max(0,messages.length()-4);i<messages.length();i++){JSONObject m=messages.optJSONObject(i); if(m!=null) text.append(m.optString("role").equals("user")?t("나: "):"Codex: ").append(m.optString("text")).append("\n\n");}
+                if(messages!=null) for(int i=Math.max(0,messages.length()-4);i<messages.length();i++){JSONObject m=messages.optJSONObject(i); if(m!=null) text.append(m.optString("role").equals("user")?t("나: "):m.optString("agentName","Codex")+": ").append(m.optString("text")).append("\n\n");}
                 transcriptText=text.length()>12000?text.substring(text.length()-12000):text.toString(); display();
             } else if(name.equals("message.delta")) { transcriptText+=copy.optString("delta"); if(transcriptText.length()>12000)transcriptText=transcriptText.substring(transcriptText.length()-12000); transcript.setText(transcriptText); }
             else if(name.equals("server.request")) { attention = true; status.setText(t("앱에서 승인 / 질문을 확인해 주세요.")); updateFace(); }

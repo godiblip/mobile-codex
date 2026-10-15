@@ -448,27 +448,31 @@
     {
       "architecture": "aarch64",
       "depends": "",
-      "filename": "pool/main/libt/libtalloc/libtalloc_2.4.3_aarch64.deb",
+      "filename": "pool/main/libt/libtalloc/libtalloc_2.5.0_aarch64.deb",
       "homepage": "https://talloc.samba.org/talloc/doc/html/index.html",
       "license": "GPL-3.0",
       "name": "libtalloc",
-      "recipe": "https://github.com/termux/termux-packages/blob/4f795f7ab7c7e0806d47a8891caa280cd8dfbe41/packages/libtalloc/build.sh",
+      "recipe": "https://github.com/termux/termux-packages/blob/505e06ef0c8dbd7611abfb90e9eb60826dcd01d7/packages/libtalloc/build.sh",
       "recipeArchive": {
-        "sha256": "ca5cfed866182b1332aa0843c932bbb5067c4e178356c38d081beac81878eca6",
-        "url": "https://codeload.github.com/termux/termux-packages/tar.gz/4f795f7ab7c7e0806d47a8891caa280cd8dfbe41"
+        "url": "https://codeload.github.com/termux/termux-packages/tar.gz/505e06ef0c8dbd7611abfb90e9eb60826dcd01d7",
+        "sha256": "be1e5f6ba5e985ffe5b06dca4b6282263351379e48e895712e3035fdf9761f4d"
       },
-      "recipeVersion": "2.4.3",
+      "recipeVersion": "2.5.0",
       "recipeVersionMatches": true,
-      "sha256": "ac81ad623d74c209718b9f3acb2dd702cc8a88c431e820d212229910b4db29da",
-      "size": 33128,
+      "sha256": "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7",
+      "size": 34036,
       "sourceArchiveStatus": "complete",
       "sources": [
         {
-          "sha256": "dc46c40b9f46bb34dd97fe41f548b0e8b247b77a918576733c528e83abd854dd",
-          "url": "https://www.samba.org/ftp/talloc/talloc-2.4.3.tar.gz"
+          "url": "https://www.samba.org/ftp/talloc/talloc-2.5.0.tar.gz",
+          "sha256": "912afa237510ae542a7733998eb18a12bcda35ab6729c8e2ddb43e8d0ebab007"
         }
       ],
-      "version": "2.4.3"
+      "version": "2.5.0",
+      "index": {
+        "url": "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages",
+        "sha256": "719c52625c036943489fbd956e0f4b9309838bf6a2e3017d9a9918b0931df3c9"
+      }
     },
     {
       "architecture": "aarch64",
@@ -652,27 +656,31 @@
     {
       "architecture": "aarch64",
       "depends": "libandroid-shmem, libtalloc",
-      "filename": "pool/main/p/proot/proot_5.1.107.95_aarch64.deb",
+      "filename": "pool/main/p/proot/proot_5.1.107.96_aarch64.deb",
       "homepage": "https://proot-me.github.io/",
       "license": "GPL-2.0",
       "name": "proot",
-      "recipe": "https://github.com/termux/termux-packages/blob/4f795f7ab7c7e0806d47a8891caa280cd8dfbe41/packages/proot/build.sh",
+      "recipe": "https://github.com/termux/termux-packages/blob/505e06ef0c8dbd7611abfb90e9eb60826dcd01d7/packages/proot/build.sh",
       "recipeArchive": {
-        "sha256": "ca5cfed866182b1332aa0843c932bbb5067c4e178356c38d081beac81878eca6",
-        "url": "https://codeload.github.com/termux/termux-packages/tar.gz/4f795f7ab7c7e0806d47a8891caa280cd8dfbe41"
+        "url": "https://codeload.github.com/termux/termux-packages/tar.gz/505e06ef0c8dbd7611abfb90e9eb60826dcd01d7",
+        "sha256": "be1e5f6ba5e985ffe5b06dca4b6282263351379e48e895712e3035fdf9761f4d"
       },
-      "recipeVersion": "5.1.107.95",
+      "recipeVersion": "5.1.107.96",
       "recipeVersionMatches": true,
-      "sha256": "0a1b3d0f6ef76436c5ed924cd8e8f5a6b7186e99e1650eb2d9bc734e218a74cb",
-      "size": 98732,
+      "sha256": "8199dca06dccb693ec09fb1759e3e1ad08b4863f0c11c612f89c20bd9ecdc1a0",
+      "size": 98800,
       "sourceArchiveStatus": "complete",
       "sources": [
         {
-          "sha256": "dbb50381c2f0b5c342bdf3d3467d80c21d2a4677d9dadd14159fa3b32f11b319",
-          "url": "https://github.com/termux/proot/archive/v5.1.107.95.zip"
+          "url": "https://github.com/termux/proot/archive/v5.1.107.96.zip",
+          "sha256": "75f654fe60dea92dabff2bf083ae8bfe4f91baa6a1a374786a6bf391015eebaa"
         }
       ],
-      "version": "5.1.107.95"
+      "version": "5.1.107.96",
+      "index": {
+        "url": "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages",
+        "sha256": "719c52625c036943489fbd956e0f4b9309838bf6a2e3017d9a9918b0931df3c9"
+      }
     },
     {
       "architecture": "aarch64",

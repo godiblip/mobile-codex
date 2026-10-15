@@ -1,0 +1,97 @@
+/* Invited agents: header participants button, right participants panel, invite sheet,
+   speaker labels in the chat and the Claude Code / Antigravity setup dialog. */
+.topbar-actions { display: flex; align-items: center; gap: var(--s-2); flex: none; }
+
+.agent-avatar {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 24px; height: 24px; border-radius: var(--r-full);
+  background: var(--solid); color: var(--on-solid); font-size: 12px; font-weight: 700; line-height: 1;
+}
+.agent-avatar[data-agent="codex"] { position: relative; background: var(--surface); color: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+.agent-avatar[data-agent="codex"]::before { content: ""; position: absolute; inset: 18%; background: url("codex-logo.png") center / contain no-repeat; }
+html[data-theme=dark] .agent-avatar[data-agent="codex"]::before { filter: brightness(0) invert(1); }
+.agent-avatar[data-agent="claude"] { background: #c96442; color: #fff; }
+.agent-avatar[data-agent="gemini"] { background: #3b6ef5; color: #fff; }
+
+.agents-toggle .agent-avatars { display: inline-flex; align-items: center; }
+.agents-toggle .agent-avatar { width: 20px; height: 20px; font-size: 10px; box-shadow: 0 0 0 2px var(--bg); }
+.agents-toggle .agent-avatar + .agent-avatar { margin-left: -6px; }
+.agents-toggle:not(.grouped) .agent-avatars { display: none; }
+.agents-toggle:not(.grouped)::before {
+  content: ""; width: 18px; height: 18px; flex: none; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+/* ---------- Participants panel (shares .file-panel placement) ---------- */
+.agents-note { margin: 0 var(--s-4) var(--s-2); font-size: var(--fs-xs); line-height: 1.5; }
+.agents-list { flex: 1; overflow: auto; overscroll-behavior: contain; padding: 0 var(--s-2) var(--s-3); }
+.agent-card { border-radius: var(--r-md); }
+.agent-card + .agent-card { margin-top: 2px; }
+.agent-row {
+  display: flex; align-items: center; gap: var(--s-3); width: 100%; min-height: 52px;
+  padding: var(--s-2); border-radius: var(--r-md); text-align: left; color: var(--text);
+}
+.agent-row:hover, .agent-row[aria-expanded="true"] { background: var(--fill-2); }
+.agent-row .agent-avatar { width: 30px; height: 30px; font-size: 13px; }
+.agent-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.agent-copy strong { font-size: var(--fs-md); font-weight: 600; }
+.agent-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font-size: var(--fs-xs); }
+.agent-card[data-status="responding"] .agent-copy small { color: var(--success); }
+.agent-card[data-status="responding"] .agent-avatar { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--success); }
+.agent-chevron { width: 16px; height: 16px; flex: none; color: var(--text-3); transition: transform var(--fast) var(--ease); }
+.agent-row[aria-expanded="true"] .agent-chevron { transform: rotate(180deg); }
+.agent-settings { display: flex; flex-direction: column; gap: var(--s-1); padding: 0 var(--s-2) var(--s-3) calc(30px + var(--s-2) * 2 + var(--s-1)); }
+.agent-settings .muted { font-size: var(--fs-xs); }
+.agent-field { margin: var(--s-1) 0; gap: var(--s-1); }
+.agent-field > span { color: var(--text-2); font-size: var(--fs-xs); font-weight: 500; }
+.agent-field select { width: 100%; min-width: 0; min-height: 40px; padding: 0 var(--s-2); border: 0; border-radius: var(--r-md); background: var(--fill-1); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); font-size: var(--fs-sm); }
+.agent-field select:disabled { color: var(--text-3); }
+.agent-settings .secondary-button { min-height: 36px; margin-top: var(--s-2); font-size: var(--fs-sm); }
+.agent-remove { color: var(--danger); }
+.agent-warning { margin: var(--s-1) 0 0; color: var(--warning-fg); font-size: var(--fs-xs); line-height: 1.5; overflow-wrap: anywhere; }
+.agents-panel-foot { flex: none; padding: var(--s-3) var(--s-3) calc(var(--s-3) + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--divider); }
+.agents-panel-foot .secondary-button { width: 100%; gap: var(--s-2); }
+.agents-panel-foot svg { width: 18px; height: 18px; }
+
+/* ---------- Invite sheet ---------- */
+.invite-list { display: flex; flex-direction: column; gap: var(--s-2); margin: var(--s-4) 0 var(--s-2); }
+.invite-row { padding: var(--s-2) var(--s-3); border-radius: var(--r-lg); background: var(--fill-1); box-shadow: inset 0 0 0 1px var(--border); }
+.invite-label { display: flex; align-items: center; gap: var(--s-3); min-height: 48px; cursor: pointer; }
+.invite-label input { width: 20px; height: 20px; flex: none; accent-color: var(--solid); }
+.invite-label .agent-avatar { width: 30px; height: 30px; font-size: 13px; }
+.invite-row:has(input:disabled) .invite-label { cursor: default; }
+.invite-connect { width: 100%; min-height: 36px; margin: var(--s-1) 0 var(--s-1); font-size: var(--fs-sm); }
+.invite-row .agent-field { margin: var(--s-1) 0 var(--s-1); }
+#invite-status:empty { display: none; }
+
+/* ---------- Chat speaker labels ---------- */
+.agent-speaker { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-2); font-size: var(--fs-sm); }
+.agent-speaker strong { font-weight: 600; }
+.agent-speaker .agent-avatar { width: 22px; height: 22px; font-size: 11px; }
+.agent-pending { color: var(--text-3); font-size: var(--fs-sm); }
+
+/* ---------- CLI setup dialog ---------- */
+.agent-setup-dialog { width: min(620px, calc(100% - 24px)); }
+.agent-setup-dialog > button { margin: var(--s-1) var(--s-1) var(--s-1) 0; }
+.agent-terminal { max-height: 240px; overflow: auto; padding: var(--s-3); border-radius: var(--r-md); background: var(--code-bg); font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.provider-terminal-keys, .provider-login-links { display: flex; flex-wrap: wrap; gap: var(--s-2); margin: var(--s-2) 0; }
+.provider-terminal-keys .secondary-button, .provider-login-links .secondary-button { min-height: 36px; padding: 0 var(--s-3); font-size: var(--fs-sm); }
+.provider-accounts { display: flex; flex-direction: column; gap: var(--s-3); margin-top: var(--s-3); }
+.provider-account-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.provider-account-actions > button { flex: 1 1 140px; }
+.provider-account-prerequisite { display: flex; flex-direction: column; gap: var(--s-2); }
+
+@media (max-width: 760px) {
+  .agents-toggle > span:last-child { display: none; }
+  .agents-toggle.grouped { padding: 0 var(--s-2); }
+}
+.provider-login-link { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: var(--s-1) 0; }
+.provider-login-link .primary-button, .provider-login-link .secondary-button { flex: 1 1 140px; min-height: 40px; font-size: var(--fs-sm); }
+.provider-login-link small { flex-basis: 100%; overflow-wrap: anywhere; }
+.provider-usage { margin: var(--s-2) 0 var(--s-3); }
+.provider-usage[hidden] { display: none; }
+/* A character pack's idle icon in place of the letter avatar. */
+.agent-avatar.agent-avatar-image.chat-character { margin: 0; padding: 0; background: var(--surface); object-fit: cover; box-shadow: inset 0 0 0 1px var(--border); }
+.agents-toggle .agent-avatar.agent-avatar-image.chat-character { width: 20px; height: 20px; }
+.agent-row .agent-avatar.agent-avatar-image.chat-character { width: 30px; height: 30px; }

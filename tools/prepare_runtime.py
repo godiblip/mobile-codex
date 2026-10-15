@@ -28,12 +28,12 @@ def verify(path, integrity):
         raise ValueError('Runtime checksum mismatch; refusing to package')
 
 
-def patch_host_name(binary):
+def patch_host_name(binary, expected_occurrences=2):
     # Android's package manager extracts executable native files named lib*.so.
     # The pinned Rust binary resolves this sibling by a fixed-width string.
     # Keep byte length identical: ELF offsets/relocations remain unchanged.
     old, new = b'codex-code-mode-host', b'libcodexmodehostx.so'
-    if len(old) != len(new) or binary.count(old) != 2:
+    if len(old) != len(new) or binary.count(old) != expected_occurrences:
         raise ValueError('Unknown Codex host layout; review the new runtime before packaging')
     return binary.replace(old, new)
 
@@ -74,7 +74,7 @@ def prepare(archive):
             with tar.extractfile(member) as src, target.open('wb') as dst:
                 shutil.copyfileobj(src, dst)
             if target.name == 'libcodex.so':
-                target.write_bytes(patch_host_name(target.read_bytes()))
+                target.write_bytes(patch_host_name(target.read_bytes(), lock.get('hostNameOccurrences', 2)))
             if target.suffix == '.so':
                 with target.open('rb') as f:
                     header = f.read(20)

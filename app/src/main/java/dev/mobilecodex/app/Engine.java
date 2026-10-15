@@ -87,8 +87,10 @@ public final class Engine {
     private String toolRequestThread = "";
     private String permissionMode, approvalMode;
     private final Map<String, PendingRequest> requests = new LinkedHashMap<>();
-    private volatile Process terminalProcess;
-    private volatile boolean terminalUsesLinux;
+    private final TerminalSession terminal = new TerminalSession((name, data) -> {
+        event(name, data);
+        if (name.equals("terminal.state") && !data.optBoolean("running") && !io.isShutdown()) io.execute(this::stopServiceIfIdle);
+    });
     private String status = t("시작할 준비가 됐습니다"), threadId = "", turnId = "", serverThreadId = "";
     private JSONObject account = new JSONObject();
     // Unknown is not signed out. Keep startup/refresh mechanics out of the login UI.
@@ -114,6 +116,24 @@ public final class Engine {
     private final PersonalInstructions instructions;
     private final DevTools devTools;
     private final LinuxRuntime linux;
+    private AgentBridge agentBridge;
+    /** Tool permission of the invited agent that is answering, keyed by the chat's local id. */
+    private final Map<String, JSONObject> roomLeases = new ConcurrentHashMap<>();
+    private volatile Process roomCommand;
+    /** Agents invited before a new chat's first message creates its session. */
+    private JSONArray draftAgents = new JSONArray();
+    private JSONArray agentProviders = new JSONArray();
+    /** One message's answering order: Codex first, then invited agents and their @-calls. */
+    private static final class GroupRun {
+        final String local;
+        final ArrayDeque<String[]> queue = new ArrayDeque<>();
+        final Set<String> seen = new HashSet<>(), edges = new HashSet<>();
+        int count, depth, codexFrom = -1; boolean cancelled;
+        String current = "", runId = "", messageId = "", model = "", effort = "";
+        GroupRun(String local) { this.local = local; }
+    }
+    private volatile GroupRun group;
+    private Approval agentApproval;
     private String addAccountRestoreKey = "";
     private record PendingRequest(RpcClient connection, Object id, String method, JSONObject params) {}
 
@@ -209,7 +229,7 @@ public final class Engine {
             JSONObject s = sessions.optJSONObject(i);
             if (s != null && !s.optBoolean("deletionPending")) summaries.put(obj("id", s.optString("id"), "title", s.optString("title"),
                 "workspace", s.optString("workspace"), "workspaceKey", s.optString("workspaceKey"), "projectId", documents.projectId(s.optString("workspaceKey")),
-                "busy", runningTurns.containsKey(s.optString("id")) || s.optJSONObject("proOperation") != null,
+                "busy", runningTurns.containsKey(s.optString("id")) || s.optJSONObject("proOperation") != null || groupRunning(s.optString("id")),
                 "approvalPending", s.optBoolean("approvalPending")));
         }
         return obj("ready", ready, "busy", busy, "status", t(status), "account", account,
@@ -222,10 +242,11 @@ public final class Engine {
             "turnDiff", active == null ? "" : active.optString("turnDiff"), "messages", snapshotMessages(),
             "messageHistory", messageHistory(active == null ? null : active.optJSONArray("messages"), snapshotMessageStart()),
             "fastMode", active != null && active.optBoolean("fastMode"),
+            "agents", agentsView(), "agentProviders", uiJsonCopy(agentProviders), "agentRun", agentRunView(),
             "pendingDeletionCount", pendingDeletionCount(), "devtools", devTools.status(), "linux", linux.status(),
             "phone", PhoneUseService.status(context), "phoneToolsAvailable", active == null || active.optInt("phoneToolsVersion") >= 1,
             "permissions", permissionMode, "approvalMode", approvalMode, "allFilesAccess", (Build.VERSION.SDK_INT >= 30 ? Environment.isExternalStorageManager() : context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED),
-            "directWorkspace", documents.directDirectory() != null, "cwd", projectDirectory().getAbsolutePath());
+            "directWorkspace", documents.directDirectory() != null, "cwd", projectDirectory().getAbsolutePath(), "terminal", terminal.snapshot());
     }
     /** Return the most recent messages in their original chronological order. */
     private JSONArray snapshotMessages() {
@@ -395,16 +416,34 @@ public final class Engine {
         return moved;
     }
     public void updatesChanged(JSONObject data) { event("updates.changed", data); }
-    public boolean canInstallUpdate() { return runningTurns.isEmpty() && !hasProOperations() && !VoiceInput.active() && !linux.status().optBoolean("busy") && (terminalProcess == null || !terminalProcess.isAlive()); }
+    public boolean canInstallUpdate() { return (agentBridge == null || !agentBridge.busy()) && roomLeases.isEmpty() && group == null && runningTurns.isEmpty() && !hasProOperations() && !VoiceInput.active() && !linux.status().optBoolean("busy") && !terminal.busy(); }
     public void voiceInputChanged() { event("voice.changed", obj()); }
     public void phoneStateChanged() { io.execute(this::publish); }
     public void handle(String action, JSONObject args, Reply reply) {
+        if (action.startsWith("agents.")) {
+            try {
+                context.startForegroundService(new Intent(context, EngineService.class));
+                agentBridge().handle(action, args, (result, error) -> {
+                    if (error == null && result != null && action.equals("agents.providers.check")) {
+                        JSONArray providers = result.optJSONArray("providers");
+                        io.execute(() -> { mergeAgentProviders(providers); publish(); });
+                    }
+                    reply.complete(result, error);
+                });
+            } catch (Exception e) { reply.complete(null, e); }
+            return;
+        }
+        if (action.startsWith("chat.pro.") || ((action.equals("chat.send") || action.equals("chat.steer")) && args.optBoolean("consultPro"))) {
+            reply.complete(null, new IOException(t("제거된 기능입니다."))); return;
+        }
         // Never queue consent revocation behind a slow engine/tool operation.
         if (Set.of("phone.stop", "chat.stop", "runtime.stop", "auth.logout").contains(action)) PhoneUseService.stopControl();
         // Installation cancellation must not queue behind a long Codex RPC.
         if (action.equals("linux.cancel")) { linux.cancel(); reply.complete(linux.status(), null); return; }
         io.execute(() -> {
             try {
+                if (Set.of("terminal.run", "files.mutate", "changes.restore", "recovery.restore").contains(action) && !roomLeases.isEmpty())
+                    throw new IOException(t("초대한 에이전트의 작업을 중지한 뒤 파일이나 명령을 실행해 주세요."));
                 switch (action) {
                     case "state" -> reply.complete(snapshot(), null);
                     case "phone.stop" -> { publish(); reply.complete(snapshot(), null); }
@@ -467,13 +506,13 @@ public final class Engine {
                     case "config.read" -> { File config = new File(codexHome.root(), "config.toml"); reply.complete(obj("content", config.exists() ? dev.mobilecodex.app.core.Utf8Files.read(config.toPath()) : ""), null); }
                     case "config.save" -> {
                         ensureEngineIdle(); dev.mobilecodex.app.core.Utf8Files.write(new File(codexHome.root(), "config.toml").toPath(), args.getString("content"));
-                        stopNow(); reply.complete(obj("ok", true), null);
+                        stopCodex(); reply.complete(obj("ok", true), null);
                     }
                     case "instructions.read" -> reply.complete(instructions.read(), null);
                     case "instructions.save" -> {
                         ensureEngineIdle(); JSONObject saved = instructions.save(args.getString("content"));
                         // AGENTS files are read when Codex starts a new execution; force that boundary after a successful write.
-                        stopNow(); reply.complete(saved, null);
+                        stopCodex(); reply.complete(saved, null);
                     }
                     case "rpc" -> {
                         start();
@@ -509,8 +548,10 @@ public final class Engine {
                         pending.connection.respond(pending.id, args.getJSONObject("result"));
                         reply.complete(obj("ok", true), null);
                     }
-                    case "terminal.run" -> { runTerminal(args.getString("command")); reply.complete(obj("ok", true), null); }
-                    case "terminal.stop" -> { stopTerminalProcess(); reply.complete(obj("ok", true), null); }
+                    case "terminal.run" -> reply.complete(runTerminal(args.getString("command")), null);
+                    case "terminal.state" -> reply.complete(terminal.snapshot(), null);
+                    case "terminal.input" -> reply.complete(terminal.input(args.getString("id"), args.getString("text")), null);
+                    case "terminal.stop" -> { terminal.stop(args.getString("id")); reply.complete(terminal.snapshot(), null); }
                     case "files.list" -> { requireFileScope(args); reply.complete(documents.list(args.optString("path", "")), null); }
                     case "files.search" -> { requireFileScope(args); reply.complete(documents.search(args.getString("query")), null); }
                     case "files.read" -> { requireFileScope(args); reply.complete(documents.read(args.getString("path")), null); }
@@ -527,7 +568,7 @@ public final class Engine {
                     case "changes.restore" -> {
                         ensureEngineIdle(); requireScope(args);
                         if (permissionMode.equals("read-only")) throw new IOException(t("읽기 전용 모드에서는 복원할 수 없습니다."));
-                        if (terminalProcess != null && terminalProcess.isAlive()) throw new IOException(t("실행 중인 터미널 명령을 먼저 중지해 주세요."));
+                        if (terminal.busy()) throw new IOException(t("실행 중인 터미널 명령을 먼저 중지해 주세요."));
                         JSONObject result = changes.restore(reviewDirectory(), args.getString("token")); event("files.changed", result); reply.complete(result, null);
                     }
                     case "projects.select" -> { documents.selectProject(args.optString("key", "")); clearActive(); publish(); reply.complete(snapshot(), null); }
@@ -571,9 +612,10 @@ public final class Engine {
                     case "chat.steer" -> { steer(args); reply.complete(obj("ok", true), null); }
                     case "chat.new" -> {
                         String key = args.has("workspaceKey") ? args.optString("workspaceKey", "") : documents.key();
-                        documents.selectProject(key); clearActive(); publish(); reply.complete(snapshot(), null);
+                        documents.selectProject(key); clearActive(); draftAgents = new JSONArray(); publish(); reply.complete(snapshot(), null);
                     }
-                    case "chat.resume" -> { resume(args.getString("id")); reply.complete(snapshot(), null); }
+                    case "chat.resume" -> { resume(args.getString("id")); draftAgents = new JSONArray(); reply.complete(snapshot(), null); }
+                    case "chat.agents.set" -> { setAgents(args.optJSONArray("agents")); reply.complete(snapshot(), null); }
                     case "chat.rename" -> { renameSession(args.getString("id"), args.getString("title")); publish(); reply.complete(snapshot(), null); }
                     case "chat.delete" -> {
                         boolean deletionPending = deleteSession(args.getString("id"));
@@ -585,6 +627,8 @@ public final class Engine {
                         if (pendingConsultation != null && pendingConsultation.localThread.equals(threadId))
                             finishConsultation(pendingConsultation, "cancelled", t("사용자가 Pro 문의를 취소했습니다."), null);
                         consultGrants.remove(threadId);
+                        GroupRun run = group;
+                        if (run != null && run.local.equals(threadId)) cancelGroup(run);
                         if (!turnId.isEmpty()) call("turn/interrupt", obj("threadId", activeCodexThreadId(), "turnId", turnId));
                         if (pendingApproval != null) pendingApproval.decision.complete(false);
                         reply.complete(obj("ok", true), null);
@@ -612,8 +656,10 @@ public final class Engine {
     }
     private void syncCurrentTurn() {
         turnId = threadId.isBlank() ? "" : runningTurns.getOrDefault(threadId, "");
-        busy = !turnId.isBlank();
-        status = busy ? t("작업 중") : (ready ? t("연결됨") : status);
+        GroupRun run = group;
+        String speaking = run != null && !threadId.isBlank() && run.local.equals(threadId) ? run.current : "";
+        busy = !turnId.isBlank() || groupRunning(threadId);
+        status = busy ? (!speaking.isBlank() && !speaking.equals(AgentGroup.CODEX) ? AgentGroup.name(speaking) + " · " + t("응답 중") : t("작업 중")) : (ready ? t("연결됨") : status);
     }
     private void clearActive() { active = null; threadId = ""; turnId = ""; serverThreadId = ""; busy = false; if (ready) status = t("연결됨"); }
     public boolean isBusy() { return busy; }
@@ -628,7 +674,7 @@ public final class Engine {
     }
     private void ensureSessionIdle(String id) throws IOException {
         JSONObject target = session(id);
-        if (runningTurns.containsKey(id) || (id.equals(threadId) && busy))
+        if (runningTurns.containsKey(id) || groupRunning(id) || (id.equals(threadId) && busy))
             throw new IOException(t("현재 대화의 작업을 먼저 중지해 주세요."));
         if (target != null && target.optJSONObject("proOperation") != null)
             throw new IOException(t("GPT-6-Pro 답변을 기다리는 대화는 먼저 중지해 주세요."));
@@ -636,17 +682,20 @@ public final class Engine {
             throw new IOException(t("Pro 문의를 기다리는 대화는 먼저 중지해 주세요."));
     }
     private void ensureProjectIdle(String key) throws IOException {
+        if(roomLeases.values().stream().anyMatch(lease->key.equals(lease.optString("projectKey"))))throw new IOException(t("이 프로젝트에서 답하는 에이전트를 먼저 중지해 주세요."));
         for (int i = 0; i < sessions.length(); i++) {
             JSONObject target = sessions.optJSONObject(i);
             if (target != null && key.equals(target.optString("workspaceKey"))) ensureSessionIdle(target.optString("id"));
         }
     }
     private void ensureEngineIdle() throws IOException {
+        if(!roomLeases.isEmpty()||group!=null)throw new IOException(t("초대한 에이전트의 답변을 먼저 중지해 주세요."));
         if (hasRunningTurns() || hasProOperations()) throw new IOException(t("진행 중인 작업을 먼저 중지해 주세요."));
     }
     private void ensureRuntimeSettingsIdle() throws IOException {
         ensureEngineIdle();
-        if (terminalProcess != null && terminalProcess.isAlive()) throw new IOException(t("터미널 명령을 마친 뒤 Linux 설정을 변경해 주세요."));
+        if(agentBridge!=null&&agentBridge.busy())throw new IOException(t("에이전트 설치·로그인 또는 연결 종료를 먼저 마쳐 주세요."));
+        if (terminal.busy()) throw new IOException(t("터미널 명령을 마친 뒤 Linux 설정을 변경해 주세요."));
         if (linux.status().optBoolean("busy")) throw new IOException(t("Linux 설치 작업을 마친 뒤 다시 시도해 주세요."));
     }
     private void linuxChanged() {
@@ -654,10 +703,11 @@ public final class Engine {
         io.execute(() -> { event("linux.changed", linux.status()); stopServiceIfIdle(); });
     }
     private void stopServiceIfIdle() {
-        if (!linux.status().optBoolean("busy") && !ready && (process == null || !process.isAlive())
-                && (terminalProcess == null || !terminalProcess.isAlive())) context.stopService(new Intent(context, EngineService.class));
+        if (roomLeases.isEmpty() && (agentBridge == null || !agentBridge.running()) && !linux.status().optBoolean("busy") && !ready && (process == null || !process.isAlive())
+                && !terminal.busy()) context.stopService(new Intent(context, EngineService.class));
     }
     private void clearRunningState() {
+        GroupRun run = group; if (run != null) cancelGroup(run);
         if (pendingConsultation != null) finishConsultation(pendingConsultation, "failed", t("Codex 연결이 종료되어 Pro 문의를 완료하지 못했습니다."), null);
         consultGrants.clear(); consultMcpReady = false; consultMcpThread = ""; consultMcpError = ""; consultMcpThreads.clear();
         runningTurns.clear();
@@ -699,17 +749,9 @@ public final class Engine {
         ProcessBuilder builder = new ProcessBuilder(binary.getAbsolutePath(), "app-server", "--listen", "stdio://");
         builder.directory(projectDirectory());
         devTools.configure(builder, processHome, runtimeAliases());
-        if (consultMcp != null) consultMcp.close();
-        consultMcp = new ProConsultMcp(context, new ProConsultMcp.Handler() {
-            @Override public void consult(String token, String prompt, ProConsultMcp.Completion completion) {
-                consultPro(token, prompt, (result, error) -> {
-                    String text = error != null ? error.getMessage() : result.optJSONArray("contentItems").optJSONObject(0).optString("text");
-                    if (error == null && result.optBoolean("success")) completion.success(text); else completion.error(text);
-                });
-            }
-            @Override public void cancelled(String token) { cancelProConsultation(token); }
-        });
-        builder.command().addAll(consultMcp.configOverrides(builder.environment().get("MC_PYTHON")));
+        // Retire the app-owned Pro bridge left in old configurations. Only disable an entry
+        // that exists: Codex rejects an MCP server that has no transport and will not start.
+        if (retiredProBridgeConfigured(config)) builder.command().addAll(List.of("-c", "mcp_servers.mobile_codex_pro.enabled=false"));
         linux.configureEnvironment(builder.environment());
         builder.environment().put("CODEX_SELF_EXE", binary.getAbsolutePath());
         context.startForegroundService(new Intent(context, EngineService.class));
@@ -770,7 +812,7 @@ public final class Engine {
             String diagnosis = stderrTail.diagnosis();
             String detail = t("Codex를 시작하지 못했습니다") + (exitCode >= 0 ? t(" (종료 코드 ") + exitCode + ")" : "") + ": " + unwrap(e).getMessage()
                 + (diagnosis.isEmpty() ? "" : t(" (진단 단서: ") + diagnosis + ")");
-            stopNow(); throw new IOException(detail, e);
+            stopCodex(); throw new IOException(detail, e);
         }
     }
     private JSONObject call(String method, JSONObject params) throws Exception { return call(method, params, 65); }
@@ -838,7 +880,7 @@ public final class Engine {
             // process boundary before starting the isolated login home. Never logout.
             boolean snapshotted = ready && processIsAlive();
             if (snapshotted) accountProfiles.saveCurrentForAddLogin(account);
-            stopNow();
+            stopCodex();
             JSONObject profile = accountProfiles.prepareAddLogin(account, snapshotted);
             addAccountRestoreKey = profile.optString("key");
             account = new JSONObject(); rateLimits = new JSONObject(); publish();
@@ -860,7 +902,7 @@ public final class Engine {
     private void restoreAccountAfterCancelledLogin() throws Exception {
         if (addAccountRestoreKey.isBlank() && !accountProfiles.hasPendingAddLogin()) return;
         addAccountRestoreKey = "";
-        stopNow(); accountProfiles.restorePreparedAddLogin(); processHome = codexHome.root(); account = new JSONObject(); rateLimits = new JSONObject(); start();
+        stopCodex(); accountProfiles.restorePreparedAddLogin(); processHome = codexHome.root(); account = new JSONObject(); rateLimits = new JSONObject(); start();
     }
     private void switchAccount(String key) throws Exception {
         ensureEngineIdle();
@@ -868,7 +910,7 @@ public final class Engine {
         if (key.equals(previous)) return;
         if (account.length() > 0) accountProfiles.saveCurrent(account);
         suppressStatePublish = true;
-        stopNow();
+        stopCodex();
         stagedSwitchValidation = true;
         stagedSwitchKey = key;
         try {
@@ -878,7 +920,7 @@ public final class Engine {
             // fails, the marker and live auth still point to the old account.
             accountProfiles.commitStagedSwitch(key);
         } catch (Exception error) {
-            try { stopNow(); } catch (Exception ignored) { }
+            try { stopCodex(); } catch (Exception ignored) { }
             try { accountProfiles.rollbackStagedSwitch(); } catch (Exception ignored) { }
             account = new JSONObject(); rateLimits = new JSONObject();
             try { stagedSwitchValidation = false; start(); } catch (Exception ignored) { }
@@ -989,9 +1031,7 @@ public final class Engine {
      * after this conversation was actually checked; an unchecked conversation is verified on send.
      */
     private boolean consultProAvailable() {
-        if (active == null || activeCodexThreadId().isBlank() || active.optInt("consultToolsVersion") >= 1) return true;
-        if (!activeCodexThreadId().equals(consultMcpThread)) return true;
-        return consultMcpReady;
+        return false;
     }
     private void refreshConsultMcpAvailability(String remoteId) {
         if (consultMcp == null || testTransport != null) return;
@@ -1527,6 +1567,8 @@ public final class Engine {
         return normalized.equals(scoped) ? normalized : "";
     }
     private void send(String text, String model, String effort, JSONArray attachmentIds, JSONArray skills, JSONArray mentions, Boolean fastMode, boolean consultPro) throws Exception {
+        // A new message from the user ends the previous answering order.
+        GroupRun previousRun = group; if (previousRun != null) cancelGroup(previousRun);
         if (ProContextBuilder.MODEL_ID.equals(model)) throw new IOException(t("GPT-6-Pro 웹 모델은 전용 전송 경로를 사용해야 합니다."));
         if (text.length() > 50000) throw new IOException(t("메시지는 최대 50,000자까지 입력할 수 있습니다."));
         documents.requireWorkspaceAvailable();
@@ -1557,6 +1599,21 @@ public final class Engine {
         }
         String targetLocal = candidate == null ? threadId : candidateLocalId;
         String targetRemote = candidateRemoteId.isBlank() ? activeCodexThreadId() : candidateRemoteId;
+        JSONObject owner = candidate == null ? active : candidate;
+        if (candidate != null && draftAgents.length() > 0) candidate.put("agents", new JSONArray(draftAgents.toString()));
+        List<String> targets = AgentGroup.grouped(owner) ? AgentGroup.targets(text, owner) : List.of(AgentGroup.CODEX);
+        if (!targets.contains(AgentGroup.CODEX)) {
+            // Only invited agents were called; Codex reads this message on its next turn.
+            if (candidate != null) { active = candidate; threadId = candidateLocalId; serverThreadId = candidateRemoteId; sessions.put(active); }
+            else if (activeCodexThreadId().isBlank() && !candidateRemoteId.isBlank()) { active.put("codexThreadId", candidateRemoteId); serverThreadId = candidateRemoteId; }
+            active.getJSONArray("messages").put(userMessage(text, attachmentIds, skills, mentions));
+            draftAgents = new JSONArray();
+            GroupRun run = new GroupRun(threadId); run.model = actualModel; run.effort = effort;
+            for (String id : targets) run.queue.add(new String[]{id, "0"});
+            group = run; persist(); advanceGroup(run); return;
+        }
+        if (AgentGroup.grouped(owner))
+            input = prepend(input, AgentGroup.codexContext(owner, owner.getJSONArray("messages"), owner.getJSONArray("messages").length(), Set.of()));
         ConsultGrant consultation = consultPro ? new ConsultGrant("", candidate == null ? active.optString("workspaceKey") : candidate.optString("workspaceKey")) : null;
         if (consultation != null) {
             if (candidateRemoteId.isBlank()) requireConsultationTool();
@@ -1578,6 +1635,13 @@ public final class Engine {
             JSONObject message = userMessage(text, attachmentIds, skills, mentions);
             if (consultation != null) message.put("consultPro", true);
             active.getJSONArray("messages").put(message);
+            draftAgents = new JSONArray();
+            if (AgentGroup.grouped(active)) {
+                GroupRun run = new GroupRun(targetLocal); run.model = actualModel; run.effort = effort;
+                run.current = AgentGroup.CODEX; run.count = 1; run.seen.add(AgentGroup.CODEX); run.codexFrom = active.getJSONArray("messages").length() - 1;
+                for (String id : targets) if (!id.equals(AgentGroup.CODEX)) run.queue.add(new String[]{id, "0"});
+                group = run;
+            }
             if (turn != null) {
                 String startedTurn = turn.optString("id", "");
                 if (!startedTurn.isBlank()) runningTurns.put(targetLocal, startedTurn);
@@ -1733,7 +1797,7 @@ public final class Engine {
                             // Stop the isolated server before promoting its
                             // auth.json, so no late refresh write can race the
                             // promotion into the primary CODEX_HOME.
-                            stopNow();
+                            stopCodex();
                             accountProfiles.finishAddLogin(account);
                             processHome = codexHome.root();
                             start();
@@ -1744,7 +1808,7 @@ public final class Engine {
                     } catch (Exception loginError) {
                         if (adding) {
                             try {
-                                stopNow();
+                                stopCodex();
                                 accountProfiles.restorePreparedAddLogin(true);
                             } catch (Exception restoreError) {
                                 event("error", obj("message", t("이전 계정을 복원하지 못했습니다: ") + unwrap(restoreError).getMessage()));
@@ -1854,6 +1918,8 @@ public final class Engine {
                     } finally { active = previous; }
                 }
                 persist(); publish();
+                GroupRun run = group;
+                if (run != null && target != null && run.local.equals(eventThreadId) && AgentGroup.CODEX.equals(run.current)) codexAnswered(run, target, interrupted || failed);
             } else if (method.equals("error")) {
                 JSONObject error = p.optJSONObject("error");
                 event("error", obj("threadId", eventThreadId, "message", error == null ? t("Codex 요청 오류") : error.optString("message", t("Codex 요청 오류"))));
@@ -2018,13 +2084,23 @@ public final class Engine {
         if (current == null && observers.isEmpty()) approval.decision.complete(false);
     }
     public void stop() {
+        if (agentBridge != null) agentBridge.stopAll();
         PhoneUseService.stopControl();
         linux.cancel();
         // Closing approval first allows a pending action to resolve without changes.
         Approval approval = pendingApproval; if (approval != null) approval.decision.complete(false);
         io.execute(() -> { autoRestorePaused = true; stopNow(); });
     }
+    /** Stops Codex and the invited-agent runner, including CLI installs and sign-ins. */
     private void stopNow() {
+        GroupRun run = group; if (run != null) cancelGroup(run);
+        if (agentBridge != null) { agentBridge.stopAll(); agentBridge.close(); }
+        stopCodex();
+    }
+    /** Restarts only Codex (sign-in, account switch, config). Claude/Antigravity setup keeps running. */
+    private void stopCodex() {
+        GroupRun run = group; if (run != null) cancelGroup(run);
+        if (roomCommand != null) roomCommand.destroy();
         if (pendingConsultation != null) finishConsultation(pendingConsultation, "cancelled", t("Codex 실행이 중지되어 Pro 문의를 취소했습니다."), null);
         consultGrants.clear(); consultMcpReady = false; consultMcpThread = ""; consultMcpError = ""; consultMcpThreads.clear();
         loginInProgress = false;
@@ -2050,6 +2126,11 @@ public final class Engine {
         persist(); publish();
         stopServiceIfIdle();
     }
+    /** Whether a config still declares the retired Pro MCP server (table or dotted keys). */
+    static boolean retiredProBridgeConfigured(File config) {
+        try { return config.isFile() && java.util.regex.Pattern.compile("(?m)^\\s*\\[?\\s*mcp_servers\\.\"?mobile_codex_pro\\b").matcher(dev.mobilecodex.app.core.Utf8Files.read(config.toPath())).find(); }
+        catch (Exception e) { return false; }
+    }
     private File projectDirectory() { File dir = documents.directDirectory(); return dir == null ? workDir : dir; }
     /**
      * DocumentStore intentionally has one selected tree. Background turns must
@@ -2071,6 +2152,361 @@ public final class Engine {
             event("files.changed", payload);
         } catch (Exception ignored) { event("files.changed", result); }
     }
+    /** Every room tool is authorized again here, below the CLI/MCP boundary. */
+    private void roomHost(String method, JSONObject p, Reply reply) {
+        io.execute(() -> {
+            try {
+                switch (method) {
+                    case "host.launch" -> {
+                        String provider=p.getString("provider"),action=p.getString("action");
+                        if(!Set.of("claude","agy").contains(provider)||!Set.of("probe","install","login","run").contains(action))throw new IOException("Invalid provider operation");
+                        File directory=new File(p.getString("directory")).getCanonicalFile();
+                        File allowed=new File(context.getFilesDir(),"rooms/work").getCanonicalFile();
+                        if(!directory.toPath().startsWith(allowed.toPath()))throw new IOException("Invalid provider directory");
+                        // Rootfs snapshots can retain sync databases whose timestamps make -Sy
+                        // skip a download. Force fresh metadata before the full upgrade; old
+                        // package versions may already have disappeared from rolling mirrors.
+                        // stdout belongs to the JSONL protocol; surface pacman progress on stderr.
+                        String bootstrap=action.equals("install")?"pacman -Syyu --noconfirm --needed python curl ca-certificates >&2 && ":"";
+                        ProcessBuilder builder=linux.command(bootstrap+"exec /usr/bin/python3 /workspace/provider-runtime.py "+provider+" "+action,directory,codexHome.root(),runtimeAliases());
+                        reply.complete(obj("argv",new JSONArray(builder.command())),null);
+                    }
+                    case "host.tools" -> {
+                        JSONObject lease=requireRoomLease(p);reply.complete(obj("tools",roomTools(lease.optString("mode"),true)),null);
+                    }
+                    case "host.tool" -> {
+                        JSONObject lease=requireRoomLease(p);
+                        String tool=p.getString("name");JSONObject arguments=p.optJSONObject("arguments");
+                        if(arguments==null)arguments=obj();
+                        roomTool(lease,tool,arguments,reply);
+                    }
+                    case "host.approve" -> { agentApprove(p, reply); return; }
+                    case "host.disconnected" -> {
+                        GroupRun run=group;
+                        if(run!=null&&!run.runId.isBlank())agentRunEvent(obj("runId",run.runId,"kind","error","message",t("에이전트 연결이 종료되었습니다.")));
+                        if(roomCommand!=null)roomCommand.destroy();
+                        roomLeases.clear();reply.complete(obj(),null);
+                    }
+                    default -> throw new IOException("Unsupported room host operation");
+                }
+            }catch(Exception e){reply.complete(null,unwrap(e));}
+        });
+    }
+    private JSONObject requireRoomLease(JSONObject p) throws IOException {
+        JSONObject lease=roomLeases.get(p.optString("roomId"));if(lease==null)throw new IOException(t("발언이 종료되었습니다."));
+        if(p.has("mode")&&!p.optString("mode").equals(lease.optString("mode")))throw new IOException("Room permission changed");
+        if(p.has("projectKey")&&!p.optString("projectKey").equals(lease.optString("projectKey")))throw new IOException("Room project changed");
+        return lease;
+    }
+    private JSONArray roomTools(String mode,boolean mcp) throws Exception {
+        JSONArray out=new JSONArray();if(mode.equals("chat"))return out;
+        JSONArray all=ToolCatalog.all();
+        all.put(obj("type","function","name","mobile_exec","description","Run one user-approved shell command in the selected project. Requires write mode and explicit approval for every call.",
+            "inputSchema",obj("type","object","properties",obj("command",obj("type","string","maxLength",8000)),"required",array("command"),"additionalProperties",false)));
+        for(int i=0;i<all.length();i++){
+            JSONObject tool=all.getJSONObject(i);String name=tool.optString("name");
+            if(name.equals("mobile_consult_pro"))continue;
+            if(mode.equals("read")&&!ToolCatalog.READ.contains(name)&&!Set.of("mobile_phone_status","mobile_phone_apps","mobile_phone_screen").contains(name))continue;
+            out.put(mcp?obj("name",name,"description",tool.optString("description"),"inputSchema",tool.getJSONObject("inputSchema")):tool);
+        }
+        return out;
+    }
+    private void roomTool(JSONObject lease,String tool,JSONObject args,Reply reply) throws Exception {
+        String mode=lease.optString("mode"),key=lease.optString("projectKey"),roomId=lease.optString("roomId");
+        boolean read=ToolCatalog.READ.contains(tool)||Set.of("mobile_phone_status","mobile_phone_apps","mobile_phone_screen").contains(tool);
+        if(mode.equals("chat")||(!read&&!mode.equals("write")))throw new IOException(t("이 에이전트에게 허용되지 않은 도구입니다."));
+        if(!read&&permissionMode.equals("read-only"))throw new IOException(t("앱의 파일 권한이 읽기 전용입니다."));
+        if(!read&&roomCommand!=null&&roomCommand.isAlive())throw new IOException(t("승인한 명령이 실행 중입니다. 명령이 끝난 뒤 다음 작업을 요청해 주세요."));
+        if(tool.equals("mobile_exec")){
+            String command=args.getString("command");if(command.isBlank()||command.length()>8000)throw new IOException("Invalid command");
+            withWorkspace(key,()->{
+                File cwd=documents.directDirectory();if(cwd==null)throw new IOException(t("명령 실행에는 기기에서 직접 접근 가능한 프로젝트 폴더가 필요합니다."));
+                File supervisor=new File(context.getFilesDir(),"rooms/runtime/command-supervisor.py");
+                ProcessBuilder builder=new ProcessBuilder("python3",supervisor.getAbsolutePath()).directory(cwd).redirectErrorStream(true);devTools.configure(builder,codexHome.root(),runtimeAliases());
+                builder.command().set(0,builder.environment().get("MC_PYTHON"));
+                linux.configureEnvironment(builder.environment());Process child=builder.start();roomCommand=child;
+                child.getOutputStream().write((obj("command",command).toString()+"\n").getBytes(StandardCharsets.UTF_8));child.getOutputStream().close();
+                Thread worker=new Thread(()->{
+                    try{ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[4096];int n;while((n=child.getInputStream().read(b))!=-1){if(out.size()+n>1024*1024){child.destroy();throw new IOException("Command output exceeded 1 MiB");}out.write(b,0,n);}int code=child.waitFor();reply.complete(obj("exitCode",code,"output",new String(out.toByteArray(),StandardCharsets.UTF_8)),null);}
+                    catch(Exception e){child.destroy();try{child.waitFor(3,TimeUnit.SECONDS);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}reply.complete(null,e);}finally{if(roomCommand==child&&!child.isAlive())roomCommand=null;}
+                },"room-command");worker.setDaemon(true);worker.start();
+                approvalTimer.schedule(()->{if(child.isAlive())child.destroy();},60,TimeUnit.SECONDS);
+                return null;
+            });return;
+        }
+        JSONObject result=withWorkspace(key,()->{
+            documents.requireWorkspaceAvailable();
+            if(ToolCatalog.WRITE.contains(tool))return documents.commit(documents.prepare(tool,args));
+            if(PhoneToolCatalog.NAMES.contains(tool))return PhoneUseService.execute(context,tool,args);
+            return switch(tool){case "mobile_read"->documents.read(args.getString("path"));case "mobile_list"->documents.list(args.optString("path"));case "mobile_search"->documents.search(args.getString("query"));default->throw new IOException("Unsupported mobile tool");};
+        });
+        if(!read)event("files.changed",obj("roomId",roomId));reply.complete(result,null);
+    }
+    // ---- Invited agents -------------------------------------------------------------------
+    // The chat's message list is the one shared history. Codex answers through its normal
+    // turn; Claude/Antigravity answer through AgentBridge, one after another.
+    private AgentBridge agentBridge() throws Exception {
+        if (agentBridge == null) synchronized (this) {
+            if (agentBridge == null) agentBridge = new AgentBridge(context, devTools, codexHome.root(), runtimeAliases(), this::roomHost, this::agentBridgeEvent);
+        }
+        return agentBridge;
+    }
+    private void agentBridgeEvent(String name, JSONObject data) {
+        if (name.equals("agents.event")) { io.execute(() -> agentRunEvent(data)); return; }
+        if (name.equals("agents.providers")) io.execute(() -> { mergeAgentProviders(data.optJSONArray("providers")); publish(); });
+        event(name, data);
+    }
+    private void mergeAgentProviders(JSONArray providers) {
+        if (providers == null) return;
+        for (int i = 0; i < providers.length(); i++) {
+            JSONObject provider = providers.optJSONObject(i); if (provider == null) continue;
+            int at = -1;
+            for (int j = 0; j < agentProviders.length(); j++) if (agentProviders.optJSONObject(j).optString("id").equals(provider.optString("id"))) at = j;
+            try { if (at < 0) agentProviders.put(provider); else agentProviders.put(at, provider); } catch (Exception ignored) {}
+        }
+    }
+    private boolean groupRunning(String local) { GroupRun run = group; return run != null && !local.isBlank() && run.local.equals(local); }
+    private JSONArray agentsView() {
+        JSONArray source = active == null ? draftAgents : active.optJSONArray("agents"), out = new JSONArray();
+        if (source != null) for (int i = 0; i < source.length(); i++) {
+            JSONObject agent = source.optJSONObject(i); if (agent == null) continue;
+            out.put(obj("id", agent.optString("id"), "provider", agent.optString("provider"), "name", agent.optString("name"),
+                "model", agent.optString("model"), "effort", agent.optString("effort"), "mode", agent.optString("mode", "chat"),
+                "character", agent.optString("character"), "enabled", agent.optBoolean("enabled", true)));
+        }
+        return out;
+    }
+    private Object agentRunView() {
+        GroupRun run = group;
+        if (run == null || threadId.isBlank() || !run.local.equals(threadId)) return JSONObject.NULL;
+        JSONArray queue = new JSONArray(); for (String[] next : run.queue) queue.put(next[0]);
+        return obj("current", run.current, "queue", queue);
+    }
+    /** Invites, reconfigures or removes agents of the open chat (or of the next new chat). */
+    private void setAgents(JSONArray changes) throws Exception {
+        if (changes == null || changes.length() == 0) throw new IOException(t("초대할 에이전트를 선택해 주세요."));
+        if (groupRunning(threadId)) throw new IOException(t("에이전트가 답하는 중에는 참가자를 바꿀 수 없습니다. 먼저 중지해 주세요."));
+        JSONObject owner = active;
+        boolean firstInvite = owner != null && !AgentGroup.grouped(owner);
+        JSONArray list = owner == null ? draftAgents : owner.optJSONArray("agents");
+        if (list == null) { list = new JSONArray(); owner.put("agents", list); }
+        JSONArray next = new JSONArray(list.toString());
+        for (int i = 0; i < changes.length(); i++) {
+            JSONObject change = changes.getJSONObject(i);
+            String id = change.optString("id"), mode = change.optString("mode", "");
+            if (AgentGroup.agent(id) == null) throw new IOException(t("지원하지 않는 에이전트입니다."));
+            if (!mode.isEmpty() && !AgentGroup.MODES.contains(mode)) throw new IOException(t("잘못된 권한입니다."));
+            JSONObject agent = null;
+            for (int j = 0; j < next.length(); j++) if (next.getJSONObject(j).optString("id").equals(id)) agent = next.getJSONObject(j);
+            if (agent == null) {
+                if (change.has("enabled") && !change.optBoolean("enabled")) continue;
+                JSONObject created = AgentGroup.newAgent(id, change.optString("model"), change.optString("effort"), mode.isEmpty() ? "chat" : mode);
+                if (change.has("character") && change.optString("character").trim().length() <= 120) created.put("character", change.optString("character").trim());
+                next.put(created);
+                continue;
+            }
+            if (change.has("model")) agent.put("model", change.optString("model"));
+            if (change.has("effort")) agent.put("effort", change.optString("effort"));
+            if (!mode.isEmpty()) agent.put("mode", mode);
+            // A character pack id chosen in the participants panel; empty keeps the letter avatar.
+            if (change.has("character")) agent.put("character", change.optString("character").trim().length() > 120 ? "" : change.optString("character").trim());
+            // A removed agent keeps its own session and cursor, so a re-invite continues from there.
+            if (change.has("enabled")) agent.put("enabled", change.optBoolean("enabled"));
+        }
+        if (owner == null) { draftAgents = next; publish(); return; }
+        owner.put("agents", next);
+        // Codex already answered everything before the first invitation.
+        JSONArray messages = owner.optJSONArray("messages");
+        if (firstInvite && owner.optString("codexCursorId").isBlank() && messages != null && messages.length() > 0)
+            owner.put("codexCursorId", messages.getJSONObject(messages.length() - 1).optString("id"));
+        persist(); publish();
+    }
+    private static JSONArray prepend(JSONArray input, String text) throws Exception {
+        JSONArray out = new JSONArray().put(obj("type", "text", "text", text, "text_elements", new JSONArray()));
+        for (int i = 0; i < input.length(); i++) out.put(input.get(i));
+        return out;
+    }
+    private JSONObject findMessage(JSONObject session, String id) {
+        JSONArray messages = session == null ? null : session.optJSONArray("messages");
+        int at = messages == null ? -1 : AgentGroup.indexOf(messages, id);
+        return at < 0 ? null : messages.optJSONObject(at);
+    }
+    private void queueFollowUps(GroupRun run, JSONObject session, String text, String self) {
+        if (run.depth >= AgentGroup.MAX_DEPTH) return;
+        for (String target : AgentGroup.followUps(text, session, self)) {
+            String edge = self + ">" + target;
+            boolean queued = run.queue.stream().anyMatch(next -> next[0].equals(target));
+            if (run.seen.contains(target) || run.edges.contains(edge) || queued) continue;
+            run.edges.add(edge); run.queue.add(new String[]{target, String.valueOf(run.depth + 1)});
+        }
+    }
+    private void codexAnswered(GroupRun run, JSONObject session, boolean stopped) {
+        if (group != run) return;
+        if (stopped) { finishGroup(run); return; }
+        try {
+            JSONArray messages = session.getJSONArray("messages");
+            StringBuilder reply = new StringBuilder();
+            for (int i = Math.max(0, run.codexFrom + 1); i < messages.length(); i++) {
+                JSONObject m = messages.getJSONObject(i);
+                if ("assistant".equals(m.optString("role")) && m.optString("agent").isBlank()) reply.append(m.optString("text")).append('\n');
+            }
+            if (messages.length() > 0) session.put("codexCursorId", messages.getJSONObject(messages.length() - 1).optString("id"));
+            queueFollowUps(run, session, reply.toString(), AgentGroup.CODEX);
+        } catch (Exception ignored) {}
+        run.current = ""; persist();
+        advanceGroup(run);
+    }
+    private void advanceGroup(GroupRun run) {
+        while (group == run && !run.cancelled) {
+            JSONObject session = session(run.local);
+            if (session == null || run.queue.isEmpty() || run.count >= AgentGroup.MAX_TURNS) { finishGroup(run); return; }
+            String[] next = run.queue.poll();
+            run.depth = Integer.parseInt(next[1]);
+            if (next[0].equals(AgentGroup.CODEX)) { if (startCodexForGroup(run, session)) return; continue; }
+            JSONObject member = AgentGroup.member(session, next[0]);
+            if (member == null) continue;
+            run.count++; run.seen.add(member.optString("id"));
+            if (startAgent(run, session, member)) return;
+        }
+    }
+    /** Codex answers an @-call from another agent; only the open chat owns a Codex turn. */
+    private boolean startCodexForGroup(GroupRun run, JSONObject session) {
+        try {
+            if (active != session || !run.local.equals(threadId)) return false;
+            start();
+            if (account.length() == 0) throw new IOException(t("ChatGPT 계정으로 로그인해 주세요."));
+            if (!active.optString("workspaceKey").equals(documents.key())) throw new IOException(t("이 대화의 원래 작업 폴더를 다시 연결해 주세요."));
+            String model = run.model.isBlank() ? active.optString("model") : run.model;
+            if (activeCodexThreadId().isBlank()) {
+                String remote = call("thread/start", threadStartParams(model)).getJSONObject("thread").getString("id");
+                active.put("codexThreadId", remote); serverThreadId = remote;
+            } else resumeRemote(false, model);
+            JSONArray messages = active.getJSONArray("messages");
+            String context = AgentGroup.codexContext(active, messages, messages.length(), Set.of()) + "\n\n다른 참가자가 Codex를 호출했습니다. 위 대화에 이어서 답하세요.";
+            JSONObject params = obj("threadId", activeCodexThreadId(), "input", array(obj("type", "text", "text", context, "text_elements", new JSONArray())),
+                "cwd", projectDirectory().getAbsolutePath(), "approvalPolicy", approvalPolicy(), "approvalsReviewer", approvalsReviewer());
+            if (!model.isBlank()) params.put("model", model);
+            if (!run.effort.isBlank()) params.put("effort", run.effort);
+            run.current = AgentGroup.CODEX; run.count++; run.seen.add(AgentGroup.CODEX); run.codexFrom = messages.length() - 1;
+            JSONObject turn = call("turn/start", params).optJSONObject("turn");
+            String started = turn == null ? "" : turn.optString("id");
+            if (!started.isBlank()) runningTurns.put(threadId, started);
+            syncCurrentTurn(); persist(); publish();
+            return true;
+        } catch (Exception e) {
+            run.current = "";
+            event("error", obj("threadId", run.local, "message", t("Codex가 이어서 답하지 못했습니다: ") + unwrap(e).getMessage()));
+            return false;
+        }
+    }
+    private boolean startAgent(GroupRun run, JSONObject session, JSONObject member) {
+        String id = member.optString("id"), mode = member.optString("mode", "chat"), key = session.optString("workspaceKey");
+        JSONArray messages = session.optJSONArray("messages");
+        JSONObject message = obj("id", "agent-" + UUID.randomUUID(), "role", "assistant", "agent", id, "agentName", member.optString("name", AgentGroup.name(id)),
+            "text", "", "status", "streaming", "createdAt", System.currentTimeMillis());
+        try {
+            if (!mode.equals("chat")) {
+                if (key.isBlank()) throw new IOException(t("작업 폴더가 없는 대화입니다. 참가자 설정에서 권한을 '대화만'으로 바꿔 주세요."));
+                if (terminal.busy()) throw new IOException(t("실행 중인 터미널 명령을 먼저 중지해 주세요."));
+                withWorkspace(key, () -> { documents.requireWorkspaceAvailable(); return null; });
+            }
+            String prompt = AgentGroup.agentPrompt(session, member, messages);
+            messages.put(message);
+            run.current = id; run.runId = UUID.randomUUID().toString(); run.messageId = message.getString("id");
+            String projectKey = mode.equals("chat") ? "" : key, runId = run.runId;
+            roomLeases.put(run.local, obj("roomId", run.local, "projectKey", projectKey, "mode", mode));
+            context.startForegroundService(new Intent(context, EngineService.class));
+            agentBridge().handle("agents.run", obj("runId", runId, "sessionId", run.local, "memberId", id, "provider", member.optString("provider"),
+                "model", member.optString("model"), "effort", member.optString("effort"), "mode", mode, "projectKey", projectKey,
+                "nativeSession", member.optString("nativeSession"), "prompt", prompt), (result, error) -> {
+                    if (error != null) io.execute(() -> agentRunEvent(obj("runId", runId, "kind", "error", "message", unwrap(error).getMessage())));
+                });
+            syncCurrentTurn(); persist(); publish();
+            return true;
+        } catch (Exception e) {
+            roomLeases.remove(run.local); run.current = ""; run.runId = "";
+            try { if (AgentGroup.indexOf(messages, message.optString("id")) < 0) messages.put(message); message.put("status", "error").put("error", unwrap(e).getMessage()); } catch (Exception ignored) {}
+            persist(); publish();
+            return false;
+        }
+    }
+    private void agentRunEvent(JSONObject data) {
+        GroupRun run = group;
+        if (run == null || run.runId.isBlank() || !run.runId.equals(data.optString("runId"))) return;
+        JSONObject session = session(run.local), message = findMessage(session, run.messageId), member = AgentGroup.member(session, run.current);
+        try {
+            switch (data.optString("kind")) {
+                case "session" -> { if (member != null) { member.put("nativeSession", data.optString("id")); persist(); } }
+                case "delta" -> {
+                    if (message == null) return;
+                    message.put("text", message.optString("text") + data.optString("text"));
+                    if (run.local.equals(threadId)) event("message.delta", obj("threadId", run.local, "id", run.messageId, "delta", data.optString("text")));
+                }
+                case "final" -> {
+                    if (message != null) message.put("text", data.optString("text")).put("status", "complete");
+                    if (member != null) member.put("nativeSession", data.optString("sessionId")).put("cursorId", run.messageId);
+                    endAgentTurn(run);
+                    if (session != null) queueFollowUps(run, session, data.optString("text"), member == null ? "" : member.optString("id"));
+                    persist(); publish(); advanceGroup(run);
+                }
+                case "error" -> {
+                    // The agent's cursor stays put: its next turn receives these messages again.
+                    if (message != null) message.put("status", data.optBoolean("interrupted") ? "interrupted" : "error").put("error", data.optString("message"));
+                    endAgentTurn(run);
+                    persist(); publish();
+                    // Other participants still answer when one agent fails.
+                    advanceGroup(run);
+                }
+                default -> {}
+            }
+        } catch (Exception e) { event("error", obj("threadId", run.local, "message", unwrap(e).getMessage())); }
+    }
+    private void endAgentTurn(GroupRun run) {
+        roomLeases.remove(run.local);
+        run.current = ""; run.runId = ""; run.messageId = "";
+        Approval approval = agentApproval; if (approval != null) approval.decision.complete(false);
+    }
+    private void finishGroup(GroupRun run) {
+        if (group != run) return;
+        group = null; roomLeases.remove(run.local);
+        syncCurrentTurn(); persist(); publish(); stopServiceIfIdle();
+    }
+    /** Stops the answering order: the running agent, its approval and anything still queued. */
+    private void cancelGroup(GroupRun run) {
+        run.cancelled = true; run.queue.clear();
+        String runId = run.runId;
+        if (!runId.isBlank() && agentBridge != null) agentBridge.stop(runId);
+        JSONObject message = findMessage(session(run.local), run.messageId);
+        try { if (message != null && "streaming".equals(message.optString("status"))) message.put("status", "interrupted"); } catch (Exception ignored) {}
+        Process child = roomCommand; if (child != null && roomLeases.containsKey(run.local)) child.destroy();
+        endAgentTurn(run);
+        if (group == run) group = null;
+        syncCurrentTurn(); persist(); publish();
+    }
+    /** Agent tool calls that change files, run commands or control the phone ask the user here. */
+    private void agentApprove(JSONObject p, Reply reply) {
+        GroupRun run = group;
+        if (run == null || run.runId.isBlank() || !run.runId.equals(p.optString("runId"))) { reply.complete(obj("allow", false), null); return; }
+        if (pendingApproval != null && !pendingApproval.decision.isDone()) { reply.complete(null, new IOException(t("다른 승인 요청을 확인 중입니다."))); return; }
+        String detail = p.optString("detail");
+        Approval approval = new Approval(AgentGroup.name(p.optString("memberId")) + " · " + p.optString("title"), detail.length() > 12000 ? detail.substring(0, 12000) + "\n…" : detail);
+        pendingApproval = approval; agentApproval = approval;
+        JSONObject session = session(run.local);
+        try { if (session != null) { session.put("approvalPending", true); persist(); publish(); } } catch (Exception ignored) {}
+        ScheduledFuture<?> timeout = approvalTimer.schedule(() -> approval.decision.complete(false), 3, TimeUnit.MINUTES);
+        approval.decision.whenCompleteAsync((approved, error) -> {
+            timeout.cancel(false);
+            if (pendingApproval == approval) pendingApproval = null;
+            if (agentApproval == approval) agentApproval = null;
+            try { JSONObject owner = session(run.local); if (owner != null) { owner.put("approvalPending", false); persist(); publish(); } } catch (Exception ignored) {}
+            reply.complete(obj("allow", error == null && Boolean.TRUE.equals(approved) && group == run && !run.cancelled), null);
+        }, io);
+        Ui current = ui;
+        taskNotification("approval", t("승인 필요"), approval.title, run.local, approval.id);
+        if (current != null) current.approval(approval);
+        for (Ui observer : observers) if (observer != current) observer.approval(approval);
+        if (current == null && observers.isEmpty()) approval.decision.complete(false);
+    }
     private File runtimeAliases() throws Exception {
         File bin = new File(context.getFilesDir(), "runtime-bin");
         if (!bin.isDirectory() && !bin.mkdirs()) throw new IOException(t("명령 경로를 만들 수 없습니다."));
@@ -2083,8 +2519,8 @@ public final class Engine {
         }
         return bin;
     }
-    private void runTerminal(String command) throws Exception {
-        if (terminalProcess != null && terminalProcess.isAlive()) throw new IOException(t("터미널 명령이 실행 중입니다."));
+    private JSONObject runTerminal(String command) throws Exception {
+        if (terminal.busy()) throw new IOException(t("터미널 명령이 실행 중입니다."));
         if (command.isBlank()) throw new IOException(t("명령을 입력해 주세요."));
         documents.requireWorkspaceAvailable();
         if (documents.workspace().optBoolean("selected") && documents.directDirectory() == null)
@@ -2098,28 +2534,17 @@ public final class Engine {
             linux.configureEnvironment(builder.environment());
         }
         builder.redirectErrorStream(true);
+        File helper = new File(context.getFilesDir(), "terminal_io.py");
+        try (InputStream in = context.getAssets().open("rooms/terminal_io.py")) {
+            Files.copy(in, helper.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+        List<String> argv = new ArrayList<>(List.of(builder.environment().get("MC_PYTHON"), helper.getAbsolutePath()));
+        argv.addAll(builder.command()); builder.command(argv);
         context.startForegroundService(new Intent(context, EngineService.class));
-        Process running;
-        try { running = builder.start(); terminalUsesLinux = useLinux; terminalProcess = running; }
+        try { return terminal.start(builder); }
         catch (Exception error) { stopServiceIfIdle(); throw error; }
-        Thread reader = new Thread(() -> {
-            try (Reader out = new InputStreamReader(running.getInputStream(), StandardCharsets.UTF_8)) {
-                char[] buffer = new char[2048]; int n;
-                while ((n = out.read(buffer)) != -1) event("terminal.output", obj("text", new String(buffer, 0, n)));
-                int code = running.waitFor(); event("terminal.exit", obj("code", code));
-            } catch (Exception e) { event("error", obj("message", t("터미널 연결이 종료되었습니다."))); }
-            finally { if (terminalProcess == running) terminalProcess = null; if (!io.isShutdown()) io.execute(this::stopServiceIfIdle); }
-        }, "mobile-terminal"); reader.setDaemon(true); reader.start();
     }
     private void stopTerminalProcess() {
-        Process running = terminalProcess;
-        if (running == null) return;
-        if (terminalUsesLinux) {
-            // Let PRoot's signal handler reap its tracees before using SIGKILL.
-            running.destroy();
-            try { if (running.waitFor(3, TimeUnit.SECONDS)) return; }
-            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-        }
-        if (running.isAlive()) running.destroyForcibly();
+        try { terminal.stop(null); } catch (IOException ignored) {}
     }
 }

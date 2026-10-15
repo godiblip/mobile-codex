@@ -18,7 +18,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
-import androidx.core.content.FileProvider;
 import org.json.JSONObject;
 import org.json.JSONArray;
 import java.io.File;
@@ -50,7 +49,7 @@ public final class MainActivity extends Activity implements Engine.Ui {
         String path = uri.getPath();
         if (!"https".equals(uri.getScheme()) || !HOST.equals(uri.getHost()) || path == null
                 || !(path.equals("/index.html") || path.equals("/app.css") || path.equals("/visual-system.css") || path.equals("/spacing.css")
-                || path.equals("/app.js") || path.equals("/ui-core.js") || path.equals("/translations.js") || path.equals("/locale.js"))) {
+                || path.equals("/app.js") || path.equals("/ui-core.js") || path.equals("/translations.js") || path.equals("/locale.js") || path.equals("/agents-ui.js") || path.equals("/agents.css"))) {
             return deniedResponse();
         }
         String mime = path.endsWith(".css") ? "text/css" : path.endsWith(".js") ? "application/javascript" : "text/html";
@@ -68,7 +67,6 @@ public final class MainActivity extends Activity implements Engine.Ui {
     static final String HOST = "appassets.androidplatform.net";
     private static final int PICK_FOLDER = 31, EXPORT_RECOVERY = 32, IMPORT_SKILL = 33, EXPORT_IMAGE = 34, PICK_ATTACHMENTS = 35, EXPORT_ATTACHMENT = 36, INSTALL_UPDATE = 37, PICK_CHARACTERS = 38;
     private WebView web;
-    private ProWebTransport proTransport;
     private final ConsultationDispatch proConsultations = new ConsultationDispatch();
     private SafeWebViewLayout root;
     private boolean keyboardVisible;
@@ -187,7 +185,6 @@ public final class MainActivity extends Activity implements Engine.Ui {
             }
         });
         root.addView(web, new FrameLayout.LayoutParams(-1, -1));
-        proTransport = new ProWebTransport(this, root);
         setContentView(root);
         applyTheme("system");
         if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -224,7 +221,6 @@ public final class MainActivity extends Activity implements Engine.Ui {
         if (dictation != null) dictation.cancel();
         engine.detach(this);
         if (approvalDialog != null) approvalDialog.dismiss();
-        if (proTransport != null) proTransport.destroy();
         web.removeJavascriptInterface("Native"); web.destroy(); super.onDestroy();
     }
     @Override public void onBackPressed() { handleBack(); }
@@ -275,13 +271,6 @@ public final class MainActivity extends Activity implements Engine.Ui {
     @Override public void event(String name, JSONObject data) {
         runOnUiThread(() -> {
             if (isDestroyed()) return;
-            if ("pro.consult".equals(name)) startProConsultation(data);
-            if ("state".equals(name)) {
-                JSONObject consultation = data.optJSONObject("pendingProConsultation");
-                if (consultation != null) startProConsultation(consultation);
-            }
-            if ("pro.consult.resolved".equals(name) && proConsultations.complete(data.optString("operationId")))
-                proTransport.cancel((result, error) -> { });
             if ("state".equals(name)) getSharedPreferences("notifications", 0).edit().putString("visibleThread", data.optString("threadId", "")).commit();
             String script = "window.mobileCodexEvent(" + JSONObject.quote(name) + "," + data + ");";
             if (loaded) web.evaluateJavascript(script, null); else pendingUiEvents.addLast(script);
@@ -483,67 +472,6 @@ public final class MainActivity extends Activity implements Engine.Ui {
             }));
         } catch (Exception error) { respond(requestId, null, error); }
     }
-    private void startProConsultation(JSONObject event) {
-        String operationId = event.optString("operationId");
-        if (proTransport == null || !proConsultations.begin(operationId)) return;
-        // Recheck native ownership after queued events or Activity reattachment.
-        engine.handle("state", obj(), (state, error) -> runOnUiThread(() -> {
-            if (!proConsultations.isActive(operationId)) return;
-            JSONObject prepared = state == null ? null : state.optJSONObject("pendingProConsultation");
-            if (error == null && (prepared == null || !operationId.equals(prepared.optString("operationId")))) {
-                proConsultations.complete(operationId); return;
-            }
-            if (prepared == null) prepared = event;
-            JSONObject target = prepared;
-            if (error != null || isDestroyed() || isFinishing()) {
-                finishProConsultation(target, null, error == null ? new IllegalStateException(t("Pro 웹 화면이 닫혔습니다.")) : error); return;
-            }
-            try {
-                JSONObject interrupted = proTransport.interruptedOperation(operationId);
-                if (interrupted != null) { finishProConsultation(target, interrupted, null); return; }
-                Uri[] uploads = proUploadUris(target.optJSONArray("uploads"));
-                proTransport.send(target, uploads, (result, transportError) -> finishProConsultation(target, result, transportError));
-            } catch (Exception sendError) { finishProConsultation(target, null, sendError); }
-        }));
-    }
-    private Uri[] proUploadUris(JSONArray values) throws Exception {
-        if (values == null || values.length() == 0) return new Uri[0];
-        File root = new File(getFilesDir(), "attachments").getCanonicalFile();
-        Uri[] result = new Uri[values.length()];
-        for (int i = 0; i < values.length(); i++) {
-            JSONObject value = values.getJSONObject(i);
-            File file = new File(value.getString("path")).getCanonicalFile();
-            if (!file.isFile() || !file.getPath().startsWith(root.getPath() + File.separator))
-                throw new java.io.IOException(t("GPT-6-Pro 첨부 파일 경로가 올바르지 않습니다."));
-            result[i] = FileProvider.getUriForFile(this, getPackageName() + ".proattachments", file);
-        }
-        return result;
-    }
-    private void finishProConsultation(JSONObject prepared, JSONObject result, Throwable transportError) {
-        String operationId = prepared.optString("operationId"), localThread = prepared.optString("threadId");
-        if (!proConsultations.complete(operationId)) return;
-        String webStatus = result == null ? "failed" : result.optString("status", "failed");
-        boolean success = "completed".equals(webStatus) && transportError == null;
-        String reason = transportError == null ? (result == null ? t("GPT-6-Pro 웹 전송에 실패했습니다.") : result.optString("reason", t("GPT-6-Pro 웹 전송에 실패했습니다.")))
-            : (transportError.getMessage() == null ? t("GPT-6-Pro 웹 전송에 실패했습니다.") : transportError.getMessage());
-        if (success && (result.optString("reply").isBlank() || result.optString("reply").length() > 200_000)) {
-            success = false; reason = t("Pro 답변 길이가 올바르지 않습니다. 자동으로 다시 문의하지 않습니다.");
-        }
-        JSONObject complete = obj("threadId", localThread, "operationId", operationId, "status", success ? "completed" : "failed",
-            "reply", success ? result.optString("reply") : "", "reason", success ? "" : reason,
-            "remoteMessageId", result == null ? "" : result.optString("remoteMessageId"),
-            "chatConversationId", result == null ? "" : result.optString("chatConversationId"),
-            "chatConversationPath", result == null ? "" : result.optString("chatConversationPath"),
-            "chatProjectPath", result == null ? "" : result.optString("chatProjectPath"));
-        engine.handle("chat.pro.consult.complete", complete, (saved, saveError) -> {
-            if (saveError == null) proTransport.acknowledge(operationId);
-            else engine.handle("chat.pro.consult.complete", obj("threadId", localThread, "operationId", operationId,
-                "status", "failed", "reason", t("Pro 자문 결과를 전달하지 못했습니다.")), (failed, failError) -> {
-                    if (failError == null) proTransport.acknowledge(operationId);
-                });
-            // This result belongs to Codex's pending tool call, not a UI request.
-        });
-    }
     private final class Bridge {
         @JavascriptInterface public String locale() { return AppLanguage.snapshot(MainActivity.this).toString(); }
         @JavascriptInterface public String textSize() { return AppTextSize.snapshot(MainActivity.this).toString(); }
@@ -556,16 +484,9 @@ public final class MainActivity extends Activity implements Engine.Ui {
                 requestId = id;
                 JSONObject args = message.optJSONObject("args"); if (args == null) args = new JSONObject();
                 JSONObject parameters = args;
-                if (action.equals("chat.pro.send") || action.equals("chat.pro.prepare") || action.equals("chat.pro.read")) {
-                    respond(id, null, new IllegalStateException(t("Pro는 Codex 작업 중 자문 도구로 사용합니다. Codex에게 자문을 요청해 주세요."))); return;
+                if (action.startsWith("chat.pro.") || action.equals("ui.chatLogin") || action.equals("ui.chat.open")) {
+                    respond(id, null, new IllegalStateException(t("제거된 기능입니다."))); return;
                 }
-                if (action.equals("chat.pro.consult.complete")) {
-                    respond(id, null, new IllegalStateException(t("Pro 자문 결과는 웹 작업에서만 전달할 수 있습니다."))); return;
-                }
-                if (action.equals("chat.pro.cancel")) {
-                    runOnUiThread(() -> proTransport.cancel((result, error) -> respond(id, result, error))); return;
-                }
-                if (action.equals("chat.pro.diagnostic")) { runOnUiThread(() -> respond(id, proTransport.diagnostic(), null)); return; }
                 if (action.equals("attachments.recover")) {
                     String saved = getSharedPreferences("attachment-result", 0).getString("pending", "");
                     respond(id, saved.isEmpty() ? obj("attachments", new org.json.JSONArray()) : new JSONObject(saved), null); return;
@@ -719,12 +640,6 @@ public final class MainActivity extends Activity implements Engine.Ui {
                         catch (Exception e) { respond(id, null, e); }
                     }); return;
                 }
-                if (action.equals("ui.chatLogin") || action.equals("ui.chat.open")) {
-                    runOnUiThread(() -> {
-                        try { startActivity(new Intent(MainActivity.this, ChatWebActivity.class).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)); respond(id, obj("ok", true), null); }
-                        catch (Exception e) { respond(id, null, e); }
-                    }); return;
-                }
                 if (action.equals("ui.storageAccess")) {
                     runOnUiThread(() -> {
                         try {
@@ -747,6 +662,12 @@ public final class MainActivity extends Activity implements Engine.Ui {
                     Uri uri = Uri.parse(args.getString("url"));
                     if (!"https".equals(uri.getScheme()) || !("auth.openai.com".equals(uri.getHost()) || "chatgpt.com".equals(uri.getHost())))
                         throw new IllegalArgumentException(t("잘못된 로그인 주소입니다."));
+                    runOnUiThread(() -> { startActivity(new Intent(Intent.ACTION_VIEW, uri)); respond(id, obj("ok", true), null); }); return;
+                }
+                if (action.equals("ui.providerLoginBrowser")) {
+                    Uri uri = Uri.parse(args.getString("url"));
+                    if (!"https".equals(uri.getScheme()) || !Set.of("claude.ai", "claude.com", "www.claude.com", "console.anthropic.com", "platform.claude.com", "auth.anthropic.com", "accounts.google.com", "antigravity.google", "antigravity.google.com").contains(uri.getHost()))
+                        throw new IllegalArgumentException(t("공식 공급자의 로그인 주소만 열 수 있습니다."));
                     runOnUiThread(() -> { startActivity(new Intent(Intent.ACTION_VIEW, uri)); respond(id, obj("ok", true), null); }); return;
                 }
                 if (action.equals("ui.copyCode")) {

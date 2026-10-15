@@ -36,6 +36,9 @@ public final class RpcClient implements AutoCloseable {
         reader.start();
     }
     public CompletableFuture<JSONObject> request(String method, JSONObject params) {
+        return request(method, params, 60);
+    }
+    public CompletableFuture<JSONObject> request(String method, JSONObject params, long timeoutSeconds) {
         long id = ids.getAndIncrement();
         CompletableFuture<JSONObject> result = new CompletableFuture<>();
         String key = String.valueOf(id);
@@ -48,7 +51,7 @@ public final class RpcClient implements AutoCloseable {
             timeout = timer.schedule(() -> {
                 CompletableFuture<JSONObject> value = pending.remove(key);
                 if (value != null) value.completeExceptionally(new TimeoutException(method + t(" 응답 시간 초과")));
-            }, 60, TimeUnit.SECONDS);
+            }, timeoutSeconds, TimeUnit.SECONDS);
         } catch (RejectedExecutionException closedTimer) {
             pending.remove(key); result.completeExceptionally(closedException()); return result;
         }

@@ -28,5 +28,13 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.patch_host_name(b'new unknown binary')
 
+    def test_reviewed_0162_layout_requires_three_fixed_width_replacements(self):
+        original = b'ELF\0' + b'codex-code-mode-host\0' * 3
+        with self.assertRaises(ValueError):
+            runtime.patch_host_name(original)
+        patched = runtime.patch_host_name(original, expected_occurrences=3)
+        self.assertEqual(len(original), len(patched))
+        self.assertEqual(patched.count(b'libcodexmodehostx.so'), 3)
+
 if __name__ == '__main__':
     unittest.main()

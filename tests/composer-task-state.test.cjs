@@ -55,7 +55,7 @@ test('Codex and Pro tasks expose Stop on initial restore without input focus', a
 });
 
 test('reading a message after leaving the composer keeps Stop visible and routes cancellation', async () => {
-  for (const [task, action] of [[{busy:true}, 'chat.stop'], [{proBusy:true}, 'chat.pro.cancel']]) {
+  for (const [task, action] of [[{busy:true}, 'chat.stop'], [{proBusy:true}, 'chat.stop']]) {
     const {w, calls} = setup(task); await tick();
     w.document.getElementById('prompt').focus();
     w.document.querySelector('.msg-copy-btn').focus();

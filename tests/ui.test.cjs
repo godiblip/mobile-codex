@@ -20,7 +20,7 @@ function setup(overrides = {}, options = {}) {
   w.HTMLDialogElement.prototype.showModal = function(){this.setAttribute('open','');};
   w.HTMLDialogElement.prototype.close = function(){this.removeAttribute('open');this.dispatchEvent(new w.Event('close'));};
   w.confirm = options.confirm || (() => true);
-  const snapshot = {ready:true,busy:false,permissions:'workspace-write',models:[],messages:[],sessions:[],account:{type:'chatgpt',email:'me@example.test'},workspace:{selected:true,name:'Project'},cwd:'/test/project',threadId:'t',status:'연결됨'};
+  const snapshot = {ready:true,busy:false,permissions:'workspace-write',models:[{id:'fixture-model',displayName:'Fixture model',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],messages:[],sessions:[],account:{type:'chatgpt',email:'me@example.test'},workspace:{selected:true,name:'Project'},cwd:'/test/project',threadId:'t',status:'연결됨'};
   w.Native = {postMessage(raw){ const m=JSON.parse(raw); calls.push(m); queueMicrotask(async () => {
     if(m.action==='rpc.respond') responses.push(m.args);
     try {
@@ -86,15 +86,14 @@ test('Fast is an explicit per-draft lightning toggle first in the bottom row',as
  assert.equal(calls.filter(c=>c.action==='chat.send').at(-1).args.fastMode,false);
  assert.equal(calls.some(c=>c.action==='config.write'||c.action==='permissions.set'),false);
 });
-test('Fast stays unavailable for unsupported models and preserves its choice with Pro consultation',async()=>{
+test('Fast stays unavailable for unsupported models and sends only the selected Codex request',async()=>{
  const {w,calls,snapshot}=setup();await tick();const d=w.document,toggle=d.getElementById('fast-mode');
  assert.equal(toggle.disabled,true);
  w.mobileCodexEvent('state',{...snapshot,models:[fastModel],busy:true});assert.equal(toggle.disabled,true);
  w.mobileCodexEvent('state',{...snapshot,models:[fastModel]});assert.equal(toggle.disabled,false);
- d.getElementById('add-attachment').click();d.getElementById('composer-consult-pro').click();await tick();
  assert.equal(toggle.disabled,false);toggle.click();await tick();assert.equal(toggle.getAttribute('aria-pressed'),'true');
  d.getElementById('prompt').value='Pro test';d.getElementById('composer').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
- const sent=calls.find(c=>c.action==='chat.send');assert.equal(sent.args.fastMode,true);assert.equal(sent.args.consultPro,true);
+ const sent=calls.find(c=>c.action==='chat.send');assert.equal(sent.args.fastMode,true);assert.equal(sent.args.consultPro,undefined);
  assert.equal(calls.some(c=>c.action==='chat.pro.send'),false);
 });
 test('Fast choices are isolated between conversation drafts',async()=>{
@@ -295,53 +294,20 @@ test('Linux incomplete installation can be explicitly removed without automatic 
  w.confirm=()=>true;remove.click();await tick();assert.equal(calls.filter(c=>c.action==='linux.remove').length,1);
  assert.equal(remove.hidden,true);assert.equal(calls.filter(c=>c.action==='linux.install').length,0);
 });
-test('account settings open official Chat sign-in without experiment controls',async()=>{
- const {w,calls}=setup();await tick();
- const button=w.document.getElementById('chat-account-login');
- assert.ok(button);
- button.click();await tick();
- assert.equal(calls.filter(call=>call.action==='ui.chatLogin').length,1);
- assert.ok(w.document.querySelector('[data-settings-panel="account"] #chat-account-login'));
- assert.doesNotMatch(w.document.body.textContent,/전송 실험|동작은 아직 검증되지 않았습니다/);
- assert.equal(w.document.getElementById('chat-login'),null);
-});
 test('submit is cancelled synchronously and calls native with chosen model and effort',async()=>{
  const {w,calls}=setup();await tick();w.document.getElementById('prompt').value='실제 파일 수정';
  const e=new w.Event('submit',{cancelable:true});w.document.getElementById('composer').dispatchEvent(e);
  assert.equal(e.defaultPrevented,true);await tick();
  assert.equal(calls.find(m=>m.action==='chat.send').args.text,'실제 파일 수정');
 });
-test('Chat opens official WebView without importing old local replies or replacing Codex state',async()=>{
- const {w,calls,snapshot}=setup({}, {drafts:{'chat-web-messages':JSON.stringify([{id:'old',role:'assistant',text:'Legacy Chat reply'}]),'chat-web-draft':'Legacy Chat draft'}});await tick();
- w.mobileCodexEvent('state',{...snapshot,busy:true,messages:[{id:'a',role:'assistant',text:'Codex answer'}]});
- const d=w.document;d.getElementById('prompt').value='Codex draft';
- d.getElementById('prompt').dispatchEvent(new w.Event('input'));
- d.getElementById('mode-chat').click();await tick();
- assert.equal(calls.filter(m=>m.action==='ui.chat.open').length,1);
- assert.equal(calls.filter(m=>m.action.startsWith('chat.web.')).length,0);
- assert.equal(d.getElementById('prompt').value,'Codex draft');
- assert.equal(d.body.classList.contains('chat-mode'),false);
- assert.match(d.getElementById('messages').textContent,/Codex answer/);
- assert.doesNotMatch(d.getElementById('messages').textContent,/Legacy Chat reply/);
- assert.equal(d.getElementById('chat-model-settings'),null);
- assert.equal(d.getElementById('mode-codex').getAttribute('aria-pressed'),'true');
- assert.ok(d.querySelector('.sidebar-top .brand + .mode-switch'));
- assert.equal(d.querySelector('.topbar .mode-switch'),null);
-});
-test('Chat opening failure leaves Codex usable and reports the failure',async()=>{
- const {w}=setup({'ui.chat.open':()=>{throw new Error('open failed');}});await tick();
- w.document.getElementById('mode-chat').click();await tick();
- assert.equal(w.document.body.classList.contains('chat-mode'),false);
- assert.match(w.document.getElementById('toast').textContent,/open failed/);
-});
-test('GPT-6-Pro uses an isolated transport without a remote Android bridge or credential observer',()=>{
+test('retired Pro transport is not started and legacy resources do not expose credentials',()=>{
  const main=fs.readFileSync('app/src/main/java/dev/mobilecodex/app/MainActivity.java','utf8');
  const app=fs.readFileSync(root+'app.js','utf8');
  const web=fs.readFileSync('app/src/main/java/dev/mobilecodex/app/ChatWebActivity.java','utf8');
  const transport=fs.readFileSync('app/src/main/java/dev/mobilecodex/app/ProWebTransport.java','utf8');
  const adapter=fs.readFileSync('app/src/main/assets/pro-web-transport.js','utf8');
  assert.equal(fs.existsSync('app/src/main/java/dev/mobilecodex/app/ChatWebTransport.java'),false);
- assert.match(main,/chat\.pro\.send|ProWebTransport/);
+ assert.doesNotMatch(main,/new ProWebTransport/);
  assert.match(app,/consultPro/);assert.doesNotMatch(app,/chat\.pro\.send/);
  assert.doesNotMatch(app,/chat\.web\.|chat-web-messages|chat-web-draft/);
  assert.doesNotMatch(web,/addJavascriptInterface|backend-api\/f\/conversation/);
@@ -352,21 +318,6 @@ test('GPT-6-Pro uses an isolated transport without a remote Android bridge or cr
    const script=fs.readFileSync('app/src/main/assets/'+name,'utf8');
    assert.doesNotMatch(script,/window\.fetch\s*=|XMLHttpRequest|backend-api\/f\/conversation/);
  }
-});
-test('Pro consultation uses the selected Codex request without changing its permissions',async()=>{
- const {w,calls,snapshot}=setup();await tick();const d=w.document;
- w.mobileCodexEvent('state',{...snapshot,permissions:'danger-full-access',approvalMode:'allow-all'});
- assert.equal(d.querySelector('#model-list input[value="chatgpt-web:gpt-6-pro"]'),null);
- d.getElementById('add-attachment').click();d.getElementById('composer-consult-pro').click();await tick();
- assert.equal(d.getElementById('model-summary').textContent,'기본 모델');assert.equal(d.getElementById('effort').disabled,false);
- assert.equal(d.getElementById('permissions').value,'danger-full-access');assert.equal(d.getElementById('permissions').disabled,false);
- assert.equal(d.getElementById('approval-mode').value,'allow-all');assert.equal(d.getElementById('approval-mode').disabled,false);
- assert.equal(calls.some(call=>call.action==='permissions.set'||call.action==='approvals.set'),false);
- d.getElementById('prompt').value='이 변경을 검토해줘';d.getElementById('composer').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
- const sent=calls.find(call=>call.action==='chat.send');assert.ok(sent);assert.equal(sent.args.consultPro,true);assert.equal(sent.args.model,'');
- assert.equal(calls.some(call=>call.action==='chat.pro.send'),false);
- w.mobileCodexEvent('state',{...snapshot,busy:true,proBusy:true,pendingProConsultation:{operationId:'pro'}});assert.equal(d.getElementById('activity-text').textContent,'Pro 답변 중');d.getElementById('stop').click();await tick();
- assert.equal(calls.at(-1).action,'chat.stop');
 });
 test('ChatGPT Pro message metadata is visible and uncertain sends warn against retry',async()=>{
  const {w,snapshot}=setup();await tick();
@@ -1572,6 +1523,9 @@ test('Codex user messages stay fully visible even when long',async()=>{
  assert.equal(w.document.querySelector('.user-message-toggle'),null);
 });
 
+
+
+
 test('settings have no GitHub sync tab and the app never calls sync actions',async()=>{
  const {w,calls}=setup();await tick();await tick();
  const d=w.document;
@@ -1595,6 +1549,57 @@ test('tool errors are compact and failed buttons show feedback inside the open m
  assert.equal(feedback.parentElement,d.getElementById('tools-dialog'));
  assert.equal(feedback.hidden,false);assert.match(feedback.textContent,/요청을 처리하지 못했습니다/);
  assert.equal(login.disabled,false);
+});
+
+
+
+
+
+
+test('GitHub sync has no settings entry or bridge traffic',async()=>{
+ const {w,calls}=setup();await tick();const d=w.document;
+ assert.equal(d.querySelector('[data-settings-tab="sync"]'),null);
+ assert.equal(d.querySelector('[data-settings-panel="sync"]'),null);
+ for(const tab of d.querySelectorAll('[data-settings-tab]')) {tab.click();await tick();}
+ assert.equal(calls.some(c=>c.action.startsWith('sync.')),false);
+ w.close();
+});
+
+test('terminal sends code and blank Enter to the running session without logging them',async()=>{
+ let terminal={id:'',revision:0,running:false,output:'',exitCode:null};
+ const {w,calls}=setup({
+  'terminal.state':()=>terminal,
+  'terminal.run':()=>terminal={id:'login-1',revision:1,running:true,output:'Paste code:',exitCode:null},
+  'terminal.input':()=>({ok:true}),
+ });await tick();const d=w.document;
+ d.getElementById('show-terminal').click();await tick();
+ const entry=d.getElementById('terminal-command'),form=d.getElementById('terminal-form');
+ entry.value='claude auth login';form.dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+ assert.equal(d.getElementById('terminal-submit').textContent,'입력 전송');
+ entry.value='fixture-private-code';form.dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+ assert.deepEqual(calls.filter(c=>c.action==='terminal.input').at(-1).args,{id:'login-1',text:'fixture-private-code'});
+ assert.equal(entry.value,'');assert.equal(entry.type,'password');
+ assert.doesNotMatch(d.getElementById('terminal-output').textContent,/fixture-private-code/);
+ form.dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+ assert.equal(calls.filter(c=>c.action==='terminal.input').at(-1).args.text,'');
+ assert.equal(calls.filter(c=>c.action==='terminal.run').length,1);
+ d.querySelector('[data-close="terminal-dialog"]').click();d.getElementById('show-terminal').click();await tick();
+ assert.equal(d.getElementById('terminal-submit').textContent,'입력 전송');
+ w.close();
+});
+
+test('terminal exit clears unsent code and stale input is never executed as a command',async()=>{
+ let terminal={id:'login-1',revision:1,running:true,output:'Paste code:',exitCode:null};
+ const {w,calls}=setup({'terminal.state':()=>terminal,'terminal.input':()=>{
+  terminal={...terminal,revision:2,running:false,exitCode:1};throw Error('Terminal ended');
+ }});await tick();const d=w.document;d.getElementById('show-terminal').click();await tick();
+ const entry=d.getElementById('terminal-command');entry.value='expired-code';
+ d.getElementById('terminal-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();await tick();
+ assert.equal(entry.value,'');assert.equal(d.getElementById('terminal-submit').textContent,'실행');
+ assert.match(d.getElementById('terminal-status').textContent,/Terminal ended/);
+ assert.equal(calls.filter(c=>c.action==='terminal.run').length,0);
+ w.mobileCodexEvent('terminal.state',{id:'login-1',revision:1,running:true,output:'old'});
+ assert.equal(d.getElementById('terminal-submit').textContent,'실행');w.close();
 });
 
 test('deleting unrelated projects and conversations remains available during Codex or Pro work',async()=>{
