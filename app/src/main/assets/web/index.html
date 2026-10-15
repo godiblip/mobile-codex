@@ -105,13 +105,13 @@
           </form>
         </div>
       </section>
-      <aside id="agents-panel" class="file-panel agents-panel" aria-labelledby="agents-panel-title" hidden><div class="panel-head"><strong id="agents-panel-title">참가자</strong><div><button id="agents-close" class="icon-button" aria-label="참가자 닫기"><svg><use href="#i-close"/></svg></button></div></div><p class="agents-note muted">이름을 누르면 모델과 추론을 고를 수 있습니다. 멘션이 없으면 모두 차례로 답합니다.</p><div id="agents-list" class="agents-list"></div><div class="agents-panel-foot"><button id="agents-invite" class="secondary-button" type="button"><svg><use href="#i-users"/></svg><span>에이전트 초대</span></button></div></aside>
+      <aside id="agents-panel" class="file-panel agents-panel" aria-labelledby="agents-panel-title" hidden><div class="panel-head"><strong id="agents-panel-title">참가자</strong><div><button id="agents-close" class="icon-button" aria-label="참가자 닫기"><svg><use href="#i-close"/></svg></button></div></div><p class="agents-note muted">이름을 누르면 설정을 바꿀 수 있습니다. 멘션이 없으면 모두 동시에 답합니다.</p><div id="agents-list" class="agents-list"></div><div class="agents-panel-foot"><button id="agents-invite" class="secondary-button" type="button"><svg><use href="#i-users"/></svg><span>에이전트 초대</span></button></div></aside>
       <aside id="file-panel" class="file-panel" hidden><div class="panel-head"><strong>파일</strong><div><button id="file-up" class="icon-button" aria-label="상위 폴더"><svg><use href="#i-up"/></svg></button><button id="file-new" class="icon-button" aria-label="새 파일"><svg><use href="#i-plus"/></svg></button><button id="folder-new" class="icon-button" aria-label="새 폴더"><svg><use href="#i-folder"/></svg></button><button id="file-close" class="icon-button" aria-label="파일 탐색 닫기"><svg><use href="#i-close"/></svg></button></div></div><div class="file-search"><svg><use href="#i-search"/></svg><input id="file-query" placeholder="파일 이름 검색" aria-label="파일 이름 검색"></div><div id="breadcrumbs" class="breadcrumbs">작업 폴더</div><div id="file-list" class="file-list"></div></aside>
     </div>
   </main>
   <dialog id="invite-dialog" class="sheet-dialog invite-sheet" aria-labelledby="invite-title"><button type="button" class="sheet-grip" data-close="invite-dialog" aria-label="아래로 끌거나 눌러서 닫기"><span aria-hidden="true"></span></button>
     <div class="dialog-head"><div><p class="eyebrow">그룹 대화</p><h2 id="invite-title">에이전트 초대</h2></div><button class="icon-button" data-close="invite-dialog" aria-label="닫기"><svg><use href="#i-close"/></svg></button></div>
-    <p class="muted">초대한 에이전트는 지금까지의 대화를 읽고 Codex 다음 차례로 답합니다. @claude, @gemini로 한 명만 부를 수도 있습니다.</p>
+    <p class="muted">초대한 에이전트는 지금까지의 대화를 읽고 함께 답합니다. @claude, @gemini로 한 명만 부를 수도 있습니다.</p>
     <div id="invite-list" class="invite-list" role="group" aria-label="초대할 에이전트"></div>
     <p id="invite-status" class="muted" role="status" aria-live="polite"></p>
     <button id="invite-confirm" class="primary-button sheet-done" type="button" disabled>초대</button>

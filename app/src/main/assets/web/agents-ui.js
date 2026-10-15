@@ -7,7 +7,7 @@
     {id:'gemini', provider:'agy', name:'Gemini', account:'Antigravity (Gemini)'},
   ];
   const EFFORTS = {none:'없음', minimal:'최소', low:'낮음', medium:'중간', high:'높음', xhigh:'매우 높음'};
-  const MODES = [{id:'chat', label:'대화만'}, {id:'read', label:'프로젝트 읽기'}, {id:'write', label:'승인 후 수정'}];
+  const MODES = [{id:'chat', label:'대화만'}, {id:'read', label:'프로젝트 읽기'}, {id:'write', label:'프로젝트 수정'}];
   const PROVIDER_STATE = {ready:'연결됨', missing:'CLI 설치 필요', login_required:'로그인 필요', unavailable:'실행 확인 필요', unsupported:'업데이트 필요', unchecked:'확인 전', installing:'설치 중…', login:'로그인 진행 중…'};
   window.MobileCodexAgents = { init({call, getState, toast, show, close, closeAddMenu, closeFilePanel, openAccounts, openLinuxSettings, usageGauge, usageTime, getCharacters, characterIcon}) {
     const t = window.MobileCodexLocale?.t || (text => text);
@@ -44,6 +44,7 @@
       const e = el('select'); e.setAttribute('aria-label', label);
       if (value && !options.some(o => o.id === value)) options = [...options, {id:value, label:value + ' · ' + t('목록 확인 필요')}];
       for (const o of options) { const opt = el('option', o.label); opt.value = o.id; e.append(opt); }
+      e.addEventListener('blur', () => queueMicrotask(renderPanel));
       e.value = value || ''; return e;
     }
     function field(label, input) { const l = el('label', null, 'option-field agent-field'); l.append(el('span', label), input); return l; }
@@ -54,11 +55,11 @@
     // ---- Participants panel ---------------------------------------------------------
     function status(id) {
       const run = getState().agentRun;
-      if (run?.current === id) return 'responding';
+      if (run?.active?.includes(id) || run?.current === id) return run?.states?.[id] || 'responding';
       if (run?.queue?.includes(id)) return 'queued';
       return 'idle';
     }
-    const STATUS_LABEL = {responding:'응답 중', queued:'차례 대기', idle:'대기'};
+    const STATUS_LABEL = {responding:'응답 중', working:'작업 중', waiting:'작업 차례 대기', approval:'승인 대기', queued:'차례 대기', idle:'대기'};
     /** A usable character pack by id, or null for the letter avatar. */
     const characterPack = id => id ? (getCharacters()?.packs || []).find(p => p.id === id && p.valid !== false) || null : null;
     function avatar(id, name, character = '') {
@@ -76,7 +77,10 @@
       for (const option of $('effort').options) { const copy = el('option', option.textContent); copy.value = option.value; effort.append(copy); }
       effort.value = $('effort').value; effort.disabled = $('effort').disabled;
       effort.onchange = () => { $('effort').value = effort.value; $('effort').dispatchEvent(new Event('change')); };
-      box.append(field(t('모델'), model), field(t('추론'), effort), el('small', t('하단 모델 선택과 같은 설정입니다.'), 'muted'));
+      const approval = select([...$('approval-mode').options].map(o => ({id:o.value, label:o.textContent})), state.approvalMode || 'auto-review', t('Codex 승인 방식'));
+      approval.disabled = !!state.busy;
+      approval.onchange = () => { $('approval-mode').value = approval.value; $('approval-mode').dispatchEvent(new Event('change')); };
+      box.append(field(t('모델'), model), field(t('추론'), effort), field(t('승인 방식'), approval), el('small', t('하단 모델 선택과 같은 설정입니다.'), 'muted'));
       return box;
     }
     function agentSettings(agent) {
@@ -88,17 +92,26 @@
       const effort = select(effortOptions(values, agent.provider === 'agy' ? '모델별 설정에 포함' : chosen?.effortSupported === false ? '추론 강도 조절 미지원' : '추론 설정 정보 없음'), agent.effort, agent.name + ' ' + t('추론'));
       effort.disabled = !values.length;
       const mode = select(MODES.map(m => ({id:m.id, label:t(m.label)})), agent.mode || 'chat', agent.name + ' ' + t('권한'));
+      const approvalOptions = [{id:'ask', label:t('승인 받기')}];
+      if (agent.provider === 'claude' && info.state === 'ready' && info.nativeAutoReview && !info.autoReviewUnavailableModels?.includes(agent.model))
+        approvalOptions.push({id:'auto-review', label:t('자동 검토')});
+      approvalOptions.push({id:'allow-all', label:t('모두 허용')});
+      const approvalValue = agent.approvalMode || 'ask', supported = approvalOptions.some(o => o.id === approvalValue);
+      if (!supported) approvalOptions.unshift({id:'', label:t('승인 방식 선택')});
+      const approval = select(approvalOptions, supported ? approvalValue : '', agent.name + ' ' + t('승인 방식'));
+      approval.disabled = agent.mode !== 'write';
+      approval.onchange = () => { if (approval.value) return setAgents([{id:agent.id, approvalMode:approval.value}]); };
       model.onchange = () => {
         const next = available.find(m => m.id === model.value), levels = next?.efforts || [];
         return setAgents([{id:agent.id, model:model.value, effort:levels.includes(agent.effort) ? agent.effort : levels.includes(next?.defaultEffort) ? next.defaultEffort : levels[0] || ''}]);
       };
       effort.onchange = () => setAgents([{id:agent.id, effort:effort.value}]);
-      mode.onchange = () => setAgents([{id:agent.id, mode:mode.value}]);
+      mode.onchange = () => { approval.disabled = mode.value !== 'write'; return setAgents([{id:agent.id, mode:mode.value}]); };
       const remove = btn(t('대화에서 내보내기'), () => setAgents([{id:agent.id, enabled:false}]), 'secondary-button agent-remove');
       const packs = (getCharacters()?.packs || []).filter(p => p.valid !== false);
       const character = select([{id:'', label:t('글자 아이콘')}, ...packs.map(p => ({id:p.id, label:p.name || p.id}))], agent.character || '', agent.name + ' ' + t('캐릭터'));
       character.onchange = () => setAgents([{id:agent.id, character:character.value}]);
-      box.append(field(t('모델'), model), field(t('추론'), effort), field(t('권한'), mode), field(t('캐릭터'), character));
+      box.append(field(t('모델'), model), field(t('추론'), effort), field(t('권한'), mode), field(t('승인 방식'), approval), field(t('캐릭터'), character));
       if (info.state && info.state !== 'ready') box.append(el('p', t(PROVIDER_STATE[info.state] || '확인 전') + (info.reason ? ' · ' + info.reason : ''), 'agent-warning'), btn(t('계정 연결'), openAccounts));
       box.append(remove);
       return box;
@@ -124,7 +137,7 @@
       renderAvatars();
       const panel = $('agents-panel'); if (!panel || panel.hidden) return;
       const state = getState();
-      const signature = JSON.stringify([state.threadId, state.agents, state.agentRun, catalog, state.models?.length, $('model').value, $('effort').value, [...expanded], window.MobileCodexLocale?.language?.()]);
+      const signature = JSON.stringify([state.threadId, state.agents, state.agentRun, state.approvalMode, state.busy, catalog, state.models?.length, $('model').value, $('effort').value, [...expanded], window.MobileCodexLocale?.language?.()]);
       // Never rebuild a select the user is operating.
       if (signature === panelSignature || (panel.contains(document.activeElement) && document.activeElement.tagName === 'SELECT')) return;
       panelSignature = signature;
@@ -341,7 +354,7 @@
       return people.filter(p => !q || p.id.startsWith(q) || p.name.toLowerCase().startsWith(q));
     }
     function render() {
-      if (getState().agentProviders?.length) for (const p of getState().agentProviders) if (!catalog.some(c => c.id === p.id && c.state === p.state)) { mergeProviders(getState().agentProviders); break; }
+      if (getState().agentProviders?.length) for (const p of getState().agentProviders) if (!catalog.some(c => c.id === p.id && JSON.stringify(c) === JSON.stringify(p))) { mergeProviders(getState().agentProviders); break; }
       renderPanel();
     }
     function localize() { document.getElementById('provider-accounts')?.remove(); accountCards.clear(); mountAccounts(); panelSignature = ''; inviteSignature = ''; renderPanel(); }

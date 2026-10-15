@@ -90,7 +90,12 @@ def probe(provider, binary, env):
             'version': version.strip()[:150], 'models': models, 'transport': 'app-linux',
             'usage': usage if authenticated else [],
             'reason': '' if authenticated else '로그인을 눌러 CLI 계정 연결을 완료해 주세요.',
+            'nativeAutoReview': supports_auto_review(provider, help_text),
             'nativeApproval': False, 'approval': 'mobile-mcp', 'resume': True, 'streaming': True}
+
+def supports_auto_review(provider, help_text):
+    section = re.search(r'--permission-mode\b(.*?)(?=\n\s+--|\Z)', help_text, re.S)
+    return provider == 'claude' and bool(section and re.search(r'\bauto\b', section.group(1)))
 
 def claude_models(binary, env):
     process = subprocess.Popen([binary, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json',
@@ -146,14 +151,20 @@ def claude_models(binary, env):
     return []
 
 def arguments(provider, binary, config):
+    approval = config.get('approvalMode', 'ask')
+    if approval not in ('ask', 'allow-all', 'auto-review') or (approval == 'auto-review' and provider != 'claude'):
+        raise ValueError('이 공급자가 지원하지 않는 승인 방식입니다.')
     for key in ('model', 'effort', 'sessionId'):
         if config.get(key) and not SAFE.fullmatch(config[key]):
             raise ValueError('잘못된 CLI 옵션입니다: ' + key)
     if provider == 'claude':
         args = [binary, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
                 '--include-partial-messages', '--tools', '', '--strict-mcp-config', '--mcp-config', '/workspace/mcp.json',
-                '--setting-sources', '', '--settings', '{"disableAllHooks":true}', '--permission-mode', 'dontAsk']
-        if config.get('mode') != 'chat':
+                '--setting-sources', '', '--settings', '{"disableAllHooks":true}', '--permission-mode',
+                'auto' if approval == 'auto-review' else 'dontAsk']
+        # Pre-allowing the MCP wildcard skips Claude's classifier. Only manual/all
+        # modes delegate approval entirely to Android; auto must pass the native gate.
+        if config.get('mode') != 'chat' and approval != 'auto-review':
             args += ['--allowedTools', 'mcp__mobile__*']
         if config.get('sessionId'):
             args += ['--resume', config['sessionId']]

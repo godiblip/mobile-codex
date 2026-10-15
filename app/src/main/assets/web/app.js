@@ -384,7 +384,8 @@
     $('model-summary').textContent = model;
     $('composer-options').setAttribute('aria-label', t('작업 설정: ') + model + t(', 추론 ') + effort + t(', 승인 ') + approval);
     $('composer-options').title = model + ' · ' + effort;
-    $('approval-mode').title = t('승인 방식') + ': ' + approval;
+    $('approval-mode').title = t('Codex 승인 방식') + ': ' + approval;
+    $('approval-mode').setAttribute('aria-label', t('Codex 승인 방식'));
     $('permission-help').textContent = state.busy ? t('작업이 끝나면 권한을 변경할 수 있습니다.') : ({'read-only':t('파일을 읽고 검토합니다.'), 'workspace-write':t('선택한 프로젝트의 파일을 수정할 수 있습니다.'), 'danger-full-access':t('앱에 허용된 기기 파일과 명령에 접근할 수 있습니다.')}[$('permissions').value] || '');
     const current = state.models.find(m => (m.model || m.id) === $('model').value) || state.models.find(m => m.isDefault);
     $('model-help').textContent = current?.description || (current ? t('연결된 계정에서 사용할 수 있는 모델입니다.') : t('모델 목록을 새로고침해 주세요.'));

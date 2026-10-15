@@ -7,7 +7,7 @@ const write=value=>{if(!closed)process.stdout.write(JSON.stringify(value)+'\n');
 const emit=(method,params)=>write({method,params});
 const host=(method,params)=>new Promise((resolve,reject)=>{
   if(closed){reject(new Error('Android 연결이 종료되었습니다.'));return;}
-  const id='host-'+(++seq);const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Android 연결 응답 시간이 초과됐습니다.'));},240000);
+  const id='host-'+(++seq);const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Android 연결 응답 시간이 초과됐습니다.'));},method==='approve'?600000:240000);
   pending.set(id,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}});
   write({id,method:'host.'+method,params});
 });
@@ -21,8 +21,8 @@ function start(p) {
   if(!/^[A-Za-z0-9_-]{1,80}$/.test(String(p.sessionId||'')))throw new Error('대화 ID가 올바르지 않습니다.');
   const prompt=String(p.prompt||'');if(!prompt||prompt.length>200000)throw new Error('에이전트에게 보낼 문맥이 비어 있거나 너무 깁니다.');
   // The CLI provider calls this pair a room and a member; here the room is one chat.
-  const room={id:p.sessionId,mode:p.mode||'chat',projectKey:p.projectKey||''};
-  const member={id:p.memberId,model:String(p.model||''),effort:String(p.effort||''),session:{id:String(p.nativeSession||'')}};
+  const room={id:p.sessionId,runId,mode:p.mode||'chat',projectKey:p.projectKey||''};
+  const member={id:p.memberId,model:String(p.model||''),effort:String(p.effort||''),approvalMode:p.approvalMode||'ask',session:{id:String(p.nativeSession||'')}};
   const controller=new AbortController(),signal=controller.signal;let text='';
   const send=(kind,data={})=>emit('agents.event',{runId,kind,...data});
   runs.set(runId,controller);

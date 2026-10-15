@@ -10,7 +10,7 @@ def relay(config, payload):
         'http://127.0.0.1:%d/' % int(config['port']), json.dumps(payload).encode(),
         {'Authorization': 'Bearer ' + config['token'], 'Content-Type': 'application/json'})
     try:
-        with urllib.request.urlopen(request, timeout=240) as response:
+        with urllib.request.urlopen(request, timeout=610) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         raise RuntimeError(json.load(error).get('error', 'Tool access denied')) from None

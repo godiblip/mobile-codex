@@ -26,6 +26,7 @@ public class AgentEngineTest {
         new File(context.getFilesDir(),"sessions.json").delete();
         context.getSharedPreferences("projects",0).edit().clear().commit();
         context.getSharedPreferences("workspace",0).edit().clear().commit();
+        context.getSharedPreferences("settings",0).edit().clear().commit();
         engine=new Engine(context);engine.setTestTransport((m,p)->{throw new AssertionError("Unexpected RPC: "+m);});
     }
     @After public void teardown() throws Exception {
@@ -51,7 +52,7 @@ public class AgentEngineTest {
                 case "thread/start"->obj("thread",obj("id","remote-1"));
                 case "thread/resume"->obj();
                 case "turn/start"->obj("turn",obj("id","turn-"+calls.size()));
-                case "turn/interrupt"->obj();
+                case "turn/interrupt","turn/steer"->obj();
                 default->throw new AssertionError(method);
             };
         });
@@ -61,15 +62,15 @@ public class AgentEngineTest {
     static JSONObject agentMessage(JSONObject state,String agent){JSONArray messages=state.optJSONArray("messages");for(int i=messages.length()-1;i>=0;i--)if(agent.equals(messages.optJSONObject(i).optString("agent")))return messages.optJSONObject(i);return null;}
 
     @Test public void chatAgentHasNoToolsAndCannotEscalateItsLease()throws Exception{
-        leases().put("one",obj("roomId","one","mode","chat","projectKey",""));
-        assertEquals(0,host("tools",obj("roomId","one")).getJSONArray("tools").length());
-        fails(()->host("tool",obj("roomId","one","mode","write","projectKey","","name","mobile_create","arguments",obj("path","bad.txt","content","bad"))));
-        fails(()->host("tool",obj("roomId","one","name","mobile_read","arguments",obj("path","secret"))));
+        leases().put("one",obj("runId","one","roomId","one","mode","chat","projectKey",""));
+        assertEquals(0,host("tools",obj("runId","one","roomId","one")).getJSONArray("tools").length());
+        fails(()->host("tool",obj("runId","one","roomId","one","mode","write","projectKey","","name","mobile_create","arguments",obj("path","bad.txt","content","bad"))));
+        fails(()->host("tool",obj("runId","one","roomId","one","name","mobile_read","arguments",obj("path","secret"))));
         leases().remove("one");
-        fails(()->host("tools",obj("roomId","one")));
+        fails(()->host("tools",obj("runId","one","roomId","one")));
     }
     @Test public void answeringAgentExcludesTerminalPermissionsAndUpdates()throws Exception{
-        leases().put("one",obj("roomId","one","mode","chat","projectKey",""));
+        leases().put("one",obj("runId","one","roomId","one","mode","chat","projectKey",""));
         fails(()->call("terminal.run",obj("command","echo bad")));
         fails(()->call("permissions.set",obj("mode","danger-full-access")));
         assertFalse(engine.canInstallUpdate());
@@ -103,8 +104,9 @@ public class AgentEngineTest {
         fails(()->call("chat.agents.set",obj("agents",new JSONArray())));
         assertEquals(0,call("state",obj()).getJSONArray("agents").length());
     }
-    @Test public void draftInviteJoinsFirstMessageAndCodexAnswersFirstWithGroupContext()throws Exception{
+    @Test public void draftInviteDispatchesConcurrentlyWithSharedContext()throws Exception{
         field("account",obj("type","chatgpt"));codex();
+        fakeAgents();
         JSONObject draft=call("chat.agents.set",obj("agents",array(obj("id","claude","model","opus","effort","high","mode","chat"))));
         assertEquals("claude",draft.getJSONArray("agents").getJSONObject(0).getString("id"));
         call("chat.send",obj("text","안녕하세요","model","gpt-test","effort","medium"));JSONObject sent=call("state",obj());
@@ -116,13 +118,15 @@ public class AgentEngineTest {
         assertEquals("안녕하세요",sent.getJSONArray("messages").getJSONObject(0).getString("text"));
         assertTrue(sent.getBoolean("busy"));
         assertEquals("codex",sent.getJSONObject("agentRun").getString("current"));
-        assertEquals("claude",sent.getJSONObject("agentRun").getJSONArray("queue").getString(0));
+        assertEquals(0,sent.getJSONObject("agentRun").getJSONArray("queue").length());
+        assertEquals(2,sent.getJSONObject("agentRun").getJSONArray("active").length());
+        assertEquals(1,launches().size());
         assertEquals(1,sent.getJSONArray("agents").length());
 
-        // Codex finishes; Claude takes the next turn. The CLI runner is unavailable under
-        // Robolectric, so the turn fails visibly and the order still ends.
+        // A provider failure leaves Codex running and finishes visibly.
         notify("item/completed",obj("threadId","remote-1","turnId",turn.optString("id"),"item",obj("type","agentMessage","id","codex-reply","text","제 의견입니다.")));
         notify("turn/completed",obj("threadId","remote-1","turn",obj("id","turn-2","status","completed")));
+        agentEvent("claude", "error", obj("message", "CLI unavailable"));
         JSONObject[] last=new JSONObject[1];
         JSONObject done=waitFor(()->{JSONObject s=call("state",obj());JSONObject m=agentMessage(s,"claude");last[0]=s;return m!=null&&"error".equals(m.optString("status"))&&!s.getBoolean("busy");});
         JSONObject claude=agentMessage(done,"claude");
@@ -148,13 +152,15 @@ public class AgentEngineTest {
         assertEquals("이제 모두",next.getJSONArray("input").getJSONObject(1).getString("text"));
     }
     @Test public void stopEndsTheAnsweringOrderAndRemovedAgentLeavesTheGroup()throws Exception{
+        fakeAgents();
         field("account",obj("type","chatgpt"));codex();
         call("chat.agents.set",obj("agents",array(obj("id","claude","model","opus","mode","chat"),obj("id","gemini","model","g","mode","chat"))));
         call("chat.send",obj("text","의견 주세요","model","gpt-test"));JSONObject sent=call("state",obj());
-        assertEquals(2,sent.getJSONObject("agentRun").getJSONArray("queue").length());
+        assertEquals(3,sent.getJSONObject("agentRun").getJSONArray("active").length());
         call("chat.stop",obj());
         JSONObject stopped=call("state",obj());
         assertTrue(stopped.isNull("agentRun"));
+        assertEquals(2,agentCalls.stream().filter(c->c.optString("action").equals("agents.stop")).count());
         assertTrue(calls.stream().anyMatch(c->c.optString("method").equals("turn/interrupt")));
         notify("turn/completed",obj("threadId","remote-1","turn",obj("id","turn-2","status","interrupted")));
         assertNull(agentMessage(call("state",obj()),"claude"));
@@ -193,5 +199,197 @@ public class AgentEngineTest {
         assertEquals("",cleared.getJSONArray("agents").getJSONObject(0).getString("character"));
         JSONObject oversized=call("chat.agents.set",obj("agents",array(obj("id","claude","character","x".repeat(121)))));
         assertEquals("",oversized.getJSONArray("agents").getJSONObject(0).getString("character"));
+    }
+
+    final List<JSONObject> agentCalls = Collections.synchronizedList(new ArrayList<>());
+    void fakeAgents() {
+        engine.setTestAgentTransport((action,args,reply)->{
+            agentCalls.add(obj("action",action,"args",args));
+            reply.complete(obj("ok",true),null);
+        });
+    }
+    List<JSONObject> launches() {
+        synchronized(agentCalls){return agentCalls.stream().filter(c->c.optString("action").equals("agents.run")).map(c->c.optJSONObject("args")).toList();}
+    }
+    JSONObject launch(String id) {
+        List<JSONObject> list=launches();
+        for(int i=list.size()-1;i>=0;i--)if(id.equals(list.get(i).optString("memberId")))return list.get(i);
+        throw new AssertionError("No launch for "+id);
+    }
+    void event(JSONObject data)throws Exception{
+        Method m=Engine.class.getDeclaredMethod("agentRunEvent",JSONObject.class);m.setAccessible(true);
+        engine.io.submit(()->{m.invoke(engine,data);return null;}).get(5,TimeUnit.SECONDS);
+    }
+    void agentEvent(String id,String kind,JSONObject data)throws Exception{
+        data.put("runId",launch(id).getString("runId")).put("kind",kind);event(data);
+    }
+    void beginGroup(String text)throws Exception{
+        field("account",obj("type","chatgpt"));codex();fakeAgents();
+        call("chat.agents.set",obj("agents",array(obj("id","claude","model","opus"),obj("id","gemini","model","g"))));
+        call("chat.send",obj("text",text,"model","gpt-test"));
+    }
+    void completeCodex(String status)throws Exception{
+        Field f=Engine.class.getDeclaredField("runningTurns");f.setAccessible(true);
+        String id=((Map<String,String>)f.get(engine)).values().iterator().next();
+        notify("turn/completed",obj("threadId","remote-1","turn",obj("id",id,"status",status)));
+    }
+    @Test public void steeringStopsOtherParticipantsAndPendingFollowUps()throws Exception{
+        beginGroup("질문");
+        agentEvent("gemini","final",obj("text","참고할 의견","sessionId","g"));
+        JSONObject state=call("state",obj());
+        call("chat.steer",obj("text","방향 변경","expectedThreadId",state.getString("threadId"),"expectedTurnId",state.getString("turnId"),"workspaceKey",""));
+        assertTrue(call("state",obj()).isNull("agentRun"));
+        assertTrue(leases().isEmpty());
+        assertEquals(1,agentCalls.stream().filter(c->c.optString("action").equals("agents.stop")).count());
+        assertFalse(calls.stream().anyMatch(c->c.optString("method").equals("turn/interrupt")));
+        JSONObject steering=calls.stream().filter(c->c.optString("method").equals("turn/steer")).findFirst().get().getJSONObject("params");
+        assertTrue(steering.getJSONArray("input").getJSONObject(0).getString("text").contains("참고할 의견"));
+        assertFalse(steering.getJSONArray("input").getJSONObject(0).getString("text").contains("[사용자] 질문"));
+        completeCodex("completed");
+        assertEquals(2,launches().size());
+    }
+    @Test public void inputCursorNativeSessionAndPolicySurviveAppRestart()throws Exception{
+        beginGroup("@claude 첫 질문");
+        agentEvent("claude","final",obj("text","첫 답변","sessionId","native-persisted"));
+        call("chat.agents.set",obj("agents",array(obj("id","claude","approvalMode","auto-review"))));
+        String local=call("state",obj()).getString("threadId");
+        engine.io.shutdownNow();Field timer=Engine.class.getDeclaredField("approvalTimer");timer.setAccessible(true);
+        ((ScheduledExecutorService)timer.get(engine)).shutdownNow();
+        engine=new Engine(context);field("account",obj("type","chatgpt"));codex();fakeAgents();
+        call("chat.resume",obj("id",local));
+        assertEquals("auto-review",call("state",obj()).getJSONArray("agents").getJSONObject(0).getString("approvalMode"));
+        call("chat.send",obj("text","@claude 둘째 질문","model","gpt-test"));
+        assertEquals("native-persisted",launch("claude").getString("nativeSession"));
+        assertFalse(launch("claude").getString("prompt").contains("첫 질문"));
+        assertFalse(launch("claude").getString("prompt").contains("첫 답변"));
+        assertTrue(launch("claude").getString("prompt").contains("둘째 질문"));
+        call("chat.stop",obj());
+    }
+    @Test public void streamsAppearInArrivalOrderAndNextRoundIncludesAllPeers()throws Exception{
+        beginGroup("첫 질문");
+        assertEquals(2,launches().size());
+        assertEquals(1,call("state",obj()).getJSONArray("messages").length());
+        assertTrue(launch("claude").getString("prompt").contains("첫 질문"));
+        assertTrue(launch("gemini").getString("prompt").contains("첫 질문"));
+        agentEvent("gemini","delta",obj("text","Gemini 먼저"));
+        notify("item/completed",obj("threadId","remote-1","item",obj("type","agentMessage","id","c1","text","Codex 의견")));
+        agentEvent("claude","delta",obj("text","Claude 나중"));
+        agentEvent("claude","final",obj("text","Claude 나중","sessionId","claude-native"));
+        completeCodex("completed");
+        agentEvent("gemini","final",obj("text","Gemini 먼저","sessionId","gemini-native"));
+        JSONObject done=call("state",obj());JSONArray messages=done.getJSONArray("messages");
+        assertEquals("gemini",messages.getJSONObject(1).getString("agent"));
+        assertEquals("c1",messages.getJSONObject(2).getString("id"));
+        assertEquals("claude",messages.getJSONObject(3).getString("agent"));
+        assertFalse(done.getBoolean("busy"));assertTrue(leases().isEmpty());
+        call("chat.send",obj("text","둘째 질문","model","gpt-test"));
+        String claude=launch("claude").getString("prompt"),gemini=launch("gemini").getString("prompt");
+        assertTrue(claude.contains("Gemini 먼저"));assertTrue(claude.contains("Codex 의견"));assertFalse(claude.contains("Claude 나중"));
+        assertTrue(gemini.contains("Claude 나중"));assertTrue(gemini.contains("Codex 의견"));assertFalse(gemini.contains("Gemini 먼저"));
+        assertFalse(claude.contains("첫 질문"));assertTrue(claude.contains("둘째 질문"));
+        assertEquals("claude-native",launch("claude").getString("nativeSession"));
+        String codex=turns().get(1).getJSONArray("input").getJSONObject(0).getString("text");
+        assertTrue(codex.contains("Claude 나중"));assertTrue(codex.contains("Gemini 먼저"));assertFalse(codex.contains("Codex 의견"));
+        call("chat.stop",obj());
+    }
+    @Test public void followUpsWaitForBatchAndCannotLoopBackToAlreadyCalledMembers()throws Exception{
+        beginGroup("@claude @gemini 의견");
+        assertEquals(0,turns().size());
+        agentEvent("claude","final",obj("text","첫 의견 @codex 확인 @claude 자기호출","sessionId","c-native"));
+        assertEquals(0,turns().size());
+        agentEvent("gemini","final",obj("text","둘째 의견 @codex 다시 호출","sessionId","g-native"));
+        assertEquals(1,turns().size());
+        String prompt=turns().get(0).getJSONArray("input").getJSONObject(0).getString("text");
+        assertTrue(prompt.contains("첫 의견"));assertTrue(prompt.contains("둘째 의견"));
+        notify("item/completed",obj("threadId","remote-1","item",obj("type","agentMessage","id","chain","text","@claude @gemini 다시")));
+        completeCodex("completed");
+        assertEquals(2,launches().size());assertFalse(call("state",obj()).getBoolean("busy"));
+    }
+    @Test public void providerFailureAndLateCancelledEventsCannotStopOrChangePeers()throws Exception{
+        beginGroup("질문");
+        String stale=launch("gemini").getString("runId");
+        agentEvent("claude","error",obj("message","provider unavailable"));
+        assertEquals(2,call("state",obj()).getJSONObject("agentRun").getJSONArray("active").length());
+        completeCodex("failed");
+        assertTrue(call("state",obj()).getBoolean("busy"));
+        agentEvent("gemini","delta",obj("text","살아있는 답"));
+        call("chat.stop",obj());
+        event(obj("runId",stale,"kind","final","text","늦은 응답","sessionId","late"));
+        JSONObject msg=agentMessage(call("state",obj()),"gemini");
+        assertEquals("살아있는 답",msg.getString("text"));assertEquals("interrupted",msg.getString("status"));
+        assertTrue(leases().isEmpty());
+    }
+    CompletableFuture<JSONObject> requestHost(String action,JSONObject args)throws Exception{
+        CompletableFuture<JSONObject> future=new CompletableFuture<>();
+        Method m=Engine.class.getDeclaredMethod("roomHost",String.class,JSONObject.class,Engine.Reply.class);m.setAccessible(true);
+        m.invoke(engine,"host."+action,args,(Engine.Reply)(r,e)->{if(e==null)future.complete(r);else future.completeExceptionally(e);});
+        call("state",obj());return future;
+    }
+    JSONObject consent(String id)throws Exception{
+        JSONObject launch=launch(id);
+        return obj("runId",launch.getString("runId"),"sessionId",launch.getString("sessionId"),"memberId",id,"title","mobile_create","detail","{\"path\":\"x.txt\",\"content\":\"one\"}");
+    }
+    void writeLease(String id,String policy)throws Exception{
+        // Isolate the host gate using an issued live turn; no external CLI is required.
+        JSONObject lease=leases().get(launch(id).getString("runId"));lease.put("mode","write").put("approvalMode",policy);
+    }
+    @Test public void allAllowedStillSerializesProjectWritersAndRevokesQueuedWorkOnStop()throws Exception{
+        beginGroup("작업");writeLease("claude","allow-all");writeLease("gemini","allow-all");
+        CompletableFuture<JSONObject> c=requestHost("approve",consent("claude")),g=requestHost("approve",consent("gemini"));
+        assertFalse(c.isDone());assertFalse(g.isDone()); // Codex owns the project first.
+        completeCodex("completed");
+        assertTrue(c.get(2,TimeUnit.SECONDS).getBoolean("allow"));assertFalse(g.isDone());
+        JSONObject lease=leases().get(launch("claude").getString("runId"));
+        JSONObject wrong=obj("runId",lease.getString("runId"),"roomId",lease.getString("roomId"),"mode","write",
+            "name","mobile_create","arguments",obj("path","different.txt","content","wrong"));
+        fails(()->host("tool",wrong)); // An approved call cannot be changed.
+        call("chat.stop",obj());assertFalse(g.get(2,TimeUnit.SECONDS).getBoolean("allow"));
+        assertFalse(host("approve",consent("claude")).getBoolean("allow"));
+    }
+    @Test public void writerSlotTransfersAfterCompletionAndReadOnlyOverridesAllAllowed()throws Exception{
+        beginGroup("@claude @gemini 작업");writeLease("claude","allow-all");writeLease("gemini","allow-all");
+        assertTrue(host("approve",consent("claude")).getBoolean("allow"));
+        CompletableFuture<JSONObject> pending=requestHost("approve",consent("gemini"));assertFalse(pending.isDone());
+        agentEvent("claude","final",obj("text","끝","sessionId","c"));
+        assertTrue(pending.get(2,TimeUnit.SECONDS).getBoolean("allow"));
+        field("permissionMode","read-only");
+        assertFalse(host("approve",consent("gemini")).getBoolean("allow"));
+        call("chat.stop",obj());
+    }
+    @Test public void automaticPoliciesGrantOnlyTheExactCallOnce()throws Exception{
+        for(String policy:List.of("allow-all","auto-review")){
+            beginGroup("@claude 작업");writeLease("claude",policy);
+            String name="agent-"+UUID.randomUUID()+".txt";
+            JSONObject args=obj("path",name,"content","approved contents");
+            JSONObject approval=consent("claude").put("detail",args.toString(2));
+            JSONObject request=obj("runId",launch("claude").getString("runId"),"roomId",launch("claude").getString("sessionId"),
+                "mode","write","projectKey","","name","mobile_create","arguments",args);
+            File output=new File(new File(context.getFilesDir(),"workspace"),name);
+            try{
+                assertTrue(host("approve",approval).getBoolean("allow"));
+                host("tool",request);
+                assertEquals("approved contents",new String(java.nio.file.Files.readAllBytes(output.toPath()),java.nio.charset.StandardCharsets.UTF_8));
+                fails(()->host("tool",request));
+                assertEquals("approved contents",new String(java.nio.file.Files.readAllBytes(output.toPath()),java.nio.charset.StandardCharsets.UTF_8));
+            }finally{output.delete();call("chat.stop",obj());}
+        }
+    }
+    @Test public void manualApprovalIsDisplayedAndCanBeDeniedAndUnsupportedModesAreRejected()throws Exception{
+        beginGroup("@claude @gemini 작업");writeLease("claude","ask");writeLease("gemini","auto-review");
+        final List<Engine.Approval> prompts=new ArrayList<>();
+        Engine.Ui observer=new Engine.Ui(){
+            public void event(String name,JSONObject data){}
+            public void approval(Engine.Approval approval){prompts.add(approval);}
+        };
+        engine.attach(observer);
+        CompletableFuture<JSONObject> manual=requestHost("approve",consent("claude"));
+        assertEquals(1,prompts.size());assertFalse(manual.isDone());
+        prompts.get(0).decision.complete(false);
+        assertFalse(manual.get(2,TimeUnit.SECONDS).getBoolean("allow"));
+        // AGY cannot choose auto-review through the public settings boundary.
+        call("chat.stop",obj());
+        fails(()->call("chat.agents.set",obj("agents",array(obj("id","gemini","approvalMode","auto-review")))));
+        JSONObject result=call("chat.agents.set",obj("agents",array(obj("id","claude","approvalMode","auto-review"))));
+        assertEquals("auto-review",result.getJSONArray("agents").getJSONObject(0).getString("approvalMode"));
     }
 }

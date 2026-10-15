@@ -3,10 +3,81 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),http=require('node:http');
 const {spawn}=require('node:child_process');
 const {CliProvider}=require('../app/src/main/assets/rooms/providers.cjs');
+
+test('auto review is offered only by a capable Claude CLI and remains model gated',async()=>{
+ const provider=new CliProvider('claude',{root:'.',host:async()=>({}),emit:()=>{}});
+ provider.cap={state:'ready',models:[{id:'m',efforts:[]}],nativeAutoReview:true};
+ const member={model:'m',approvalMode:'auto-review'};
+ await provider.validate(member);
+ provider.cap.autoReviewUnavailableModels=['m'];
+ await assert.rejects(provider.validate(member),/자동 검토/);
+ provider.cap.autoReviewUnavailableModels=[];provider.cap.nativeAutoReview=false;
+ await assert.rejects(provider.validate(member),/자동 검토/);
+ provider.id='agy';provider.cap.nativeAutoReview=true;
+ await assert.rejects(provider.validate(member),/자동 검토/);
+});
 const shell=process.platform==='win32'
  ? [path.join(process.env.ProgramFiles||'C:/Program Files','Git/bin/sh.exe'),path.join(process.env.LOCALAPPDATA||'','Programs/Git/bin/sh.exe')].find(p=>fs.existsSync(p))
  : '/bin/sh';
 const engineSource=fs.readFileSync(path.join(__dirname,'../app/src/main/java/dev/mobilecodex/app/Engine.java'),'utf8');
+
+for (const permission of ['auto','default','missing']) test('Claude MCP auto review requires effective native mode: '+permission,{timeout:10000},async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'provider-auto-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const hosts=[],events=[];const provider=new CliProvider('claude',{root,host:async(method,args)=>{hosts.push({method,args});return {ok:true};},emit:(name,data)=>events.push({name,data})});
+ const script=`const readline=require('node:readline');readline.createInterface({input:process.stdin}).on('line',()=>{
+   const mode=${JSON.stringify(permission)};
+   if(mode!=='missing')console.log(JSON.stringify({type:'system',subtype:'init',session_id:'s',permissionMode:mode}));
+ });`;
+ let config;provider.launch=async(action,c)=>{config=c;return spawn(process.execPath,['-e',script],{stdio:['pipe','pipe','pipe']});};
+ t.after(()=>provider.close());const controller=new AbortController();
+ const pending=provider.run({room:{id:'room',runId:'turn-1',mode:'write',projectKey:'p'},
+   member:{id:'claude',model:'m',effort:'',approvalMode:'auto-review',session:{id:''}},
+   prompt:'wait',signal:controller.signal,event:()=>{},approve:async()=>true});
+ const outcome=pending.then(value=>({value}),error=>({error}));
+ if(permission==='default'){
+   assert.match((await outcome).error.message,/자동 검토/);
+   assert.deepEqual(provider.cap.autoReviewUnavailableModels,['m']);
+   assert.ok(events.some(e=>e.name==='agents.providers'));
+   return;
+ }
+ for(let i=0;i<100;i++){
+   const s=provider.sessions.get('room-claude');
+   if(s?.turn&&(permission==='missing'||s.nativeAutoReview))break;
+   await new Promise(resolve=>setTimeout(resolve,10));
+ }
+ const s=provider.sessions.get('room-claude');
+ const result=await httpCall(s.server.address().port,s.token,{action:'call',name:'mobile_exec',arguments:{command:'echo ok'}});
+ assert.equal(result.code,permission==='auto'?200:403);
+ assert.equal(hosts.length,permission==='auto'?1:0);
+ if(permission==='auto')assert.equal(hosts[0].args.runId,'turn-1');
+ assert.equal(config.approvalMode,'auto-review');
+ controller.abort();assert.ok((await outcome).error);
+});
+
+test('changing approval policy restarts a hot CLI with the new policy',async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'provider-policy-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const provider=new CliProvider('agy',{root,host:async()=>({}),emit:()=>{}}),configs=[];
+ provider.launch=async(action,config)=>{configs.push(config);return spawn(process.execPath,['-e',fixture],{stdio:['pipe','pipe','pipe']});};
+ t.after(()=>provider.close());
+ const room={id:'r',runId:'a',mode:'write'},member={id:'gemini',model:'m',approvalMode:'ask',session:{id:''}};
+ const run=()=>provider.run({room,member,prompt:'answer',signal:new AbortController().signal,event:()=>{}});
+ member.session.id=(await run()).sessionId;
+ member.approvalMode='allow-all';room.runId='b';await run();
+ assert.equal(configs.length,2);assert.deepEqual(configs.map(c=>c.approvalMode),['ask','allow-all']);
+});
+
+test('immediate resend waits for the cancelled CLI and uses a fresh process',{timeout:10000},async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'provider-resend-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const provider=new CliProvider('agy',{root,host:async()=>({}),emit:()=>{}});let launches=0;
+ provider.launch=async()=>{launches++;return spawn(process.execPath,['-e',fixture],{stdio:['pipe','pipe','pipe']});};
+ t.after(()=>provider.close());const first=new AbortController();
+ const input={room:{id:'r',runId:'one',mode:'chat'},member:{id:'g',model:'m',session:{id:''}},event:()=>{}};
+ const old=provider.run({...input,prompt:'wait',signal:first.signal}).then(()=>false,()=>true);
+ while(!provider.sessions.get('r-g')?.turn)await new Promise(resolve=>setTimeout(resolve,5));
+ first.abort();
+ const next=await provider.run({...input,room:{...input.room,runId:'two'},prompt:'new',signal:new AbortController().signal});
+ assert.equal(await old,true);assert.equal(next.text,'answer-1');assert.equal(launches,2);
+});
 const installBootstrap=JSON.parse('"'+engineSource.match(/String bootstrap=action.equals\("install"\)\?"([^"\n]+)"/)[1]+'"');
 
 for(const id of ['claude','agy'])test(id+' installer waits for explicit answers and forwards y/n/Enter to its child',{timeout:10000},async t=>{

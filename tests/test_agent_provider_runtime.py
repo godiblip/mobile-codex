@@ -15,6 +15,30 @@ spec.loader.exec_module(runtime)
 sys.path.insert(0, str(Path(runtime.__file__).parent))
 
 class RoomProviderRuntimeTests(unittest.TestCase):
+    def test_native_auto_review_is_detected_from_this_clis_permission_choices(self):
+        help_text = '--permission-mode <mode> choices: default, acceptEdits, auto, dontAsk\n  --model <model>'
+        self.assertTrue(runtime.supports_auto_review('claude', help_text))
+        self.assertFalse(runtime.supports_auto_review('agy', help_text))
+        self.assertFalse(runtime.supports_auto_review('claude', help_text.replace(', auto', '')))
+        self.assertFalse(runtime.supports_auto_review('claude', '--model auto'))
+
+    def test_claude_auto_review_does_not_bypass_the_native_mcp_classifier(self):
+        args = runtime.arguments('claude', '/bin/claude', {'mode': 'write', 'approvalMode': 'auto-review'})
+        self.assertEqual(args[args.index('--permission-mode') + 1], 'auto')
+        self.assertNotIn('--allowedTools', args)
+        self.assertEqual(args[args.index('--tools') + 1], '')
+        self.assertIn('--strict-mcp-config', args)
+        self.assertNotIn('--dangerously-skip-permissions', args)
+
+    def test_all_allowed_still_uses_host_gated_tools_and_agy_has_no_fake_auto_review(self):
+        for provider in ['claude', 'agy']:
+            args = runtime.arguments(provider, '/bin/cli', {'mode': 'write', 'approvalMode': 'allow-all'})
+            self.assertNotIn('--dangerously-skip-permissions', args)
+        with self.assertRaises(ValueError):
+            runtime.arguments('agy', '/bin/agy', {'approvalMode': 'auto-review'})
+        with self.assertRaises(ValueError):
+            runtime.arguments('claude', '/bin/claude', {'approvalMode': 'invalid'})
+
     @unittest.skipUnless(os.name == 'posix', 'PTY and /dev/tty require a POSIX host')
     def test_setup_terminal_delivers_batched_answers_to_controlling_tty_without_echo(self):
         child = '''

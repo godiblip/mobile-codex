@@ -26,15 +26,16 @@ The APK-opening app may separately require **Allow from this source**. Menu name
 
 Mobile Codex is an independent Android client built around the Codex app-server. It bundles an Android port of Codex, Python, Node.js, and Git, so you do not need to install Termux or keep a separate PC server running.
 
-**0.2.9 stable** · **ARM64 / Android 10+** · Created by [nokryong](https://github.com/nokryong)
+**0.2.10 stable** · **ARM64 / Android 10+** · Created by [nokryong](https://github.com/nokryong)
 
 [Download APK](https://github.com/nokryong/mobile-codex/releases) · [Builds](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [Report an issue](https://github.com/nokryong/mobile-codex/issues)
 
 > This is not an official OpenAI app. Model inference requires an internet connection and an account with Codex access. The Codex process and file/command tools run on your Android device.
 
-## 0.2.9 fix
+## 0.2.10 update
 
-- Fix truncated Antigravity login links by joining the full address between terminal separators, including blank lines. [Release notes](docs/releases/0.2.9.md).
+- Choose approval settings for each invited agent. Claude exposes automatic review when its installed CLI supports it; unsupported choices are hidden.
+- Send to everyone at once and show replies in first-output order. Project changes still take turns. [Release notes](docs/releases/0.2.10.md).
 
 ## Highlights in 0.2.8
 
@@ -52,7 +53,7 @@ Project information can be transferred with JSON files; chat history, running ta
 | Feature | What it does |
 | --- | --- |
 | Projects and chats | Per-project chats and general chats using the default Codex folder; saved history, streaming, interruption, and additional instructions during a task |
-| Invited agents | Claude and Gemini (Antigravity) in the current Codex chat; participant mentions, sequential replies and individual settings |
+| Invited agents | Claude and Gemini (Antigravity) in the current Codex chat; participant mentions, concurrent replies and individual settings |
 | Fast | Opt-in Fast mode for supported Codex models |
 | Project information transfer | Export and import project IDs, names, and merge history with JSON files; bind local folders separately |
 | Files | Browse, search, read, create, edit, move, rename, and delete files; confirm changes and keep recovery copies |
@@ -74,7 +75,7 @@ You need an **ARM64 device running Android 10 or later**, an up-to-date Android 
 
 ### Download the APK
 
-Open the [0.2.9 release](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.9) and download **`mobile-codex-0.2.9-arm64.apk`** from the release assets. Open the APK and follow Android’s installation prompts. If requested, allow installation from the app you used to download/open it.
+Open the [0.2.10 release](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.10) and download **`mobile-codex-0.2.10-arm64.apk`** from the release assets. Open the APK and follow Android’s installation prompts. If requested, allow installation from the app you used to download/open it.
 
 New app versions are published automatically after the `main` workflow passes its tests, builds, and original-key signature verification. Alpha versions are marked as prereleases. A published version is never silently replaced; maintainers must increment both `versionName` and `versionCode` for the next release.
 
@@ -114,9 +115,9 @@ Since 0.1.7 the application ID is `dev.mobilecodex.app`. Older builds with a dif
 
 ### Inviting Claude and Gemini
 
-Every chat starts with Codex. Use **+ → Invite agents** in the composer to add Claude and/or Gemini (Antigravity) to the current chat. Invited agents read the conversation so far. Without a mention, Codex answers first and the invited agents follow in order; `@codex`, `@claude`, `@gemini`, or `@all` call specific participants. Sending a new message or pressing stop ends the current order.
+Every chat starts with Codex. Use **+ → Invite agents** in the composer to add Claude and/or Gemini (Antigravity) to the current chat. Invited agents read the conversation so far. Without a mention, everyone answers concurrently, displayed in first-output order; `@codex`, `@claude`, `@gemini`, or `@all` call specific participants. Stop cancels all replies and pending calls. A new instruction to an active Codex turn stops the other participants.
 
-The **Participants** button in the header opens a right-hand panel. Tap a name to choose its model and reasoning; Codex shares the composer's model picker. Each invited agent also has a permission (chat only, read project, or edit with approval) and can be removed from the chat.
+The **Participants** button in the header opens a right-hand panel. Tap a name to choose its model and reasoning; Codex shares the composer's settings. Each invited agent has project permissions and an approval mode: ask or allow all. Claude also offers its native auto review when supported. Project mutations run one participant at a time.
 
 Claude and Antigravity use the app's optional Linux environment. Enable it, then install and sign in from **Settings → Account**. No external Termux app is required. Model options come from each provider; unavailable providers fail explicitly. See [invited agents](docs/invited-agents.md) for details and device checks.
 

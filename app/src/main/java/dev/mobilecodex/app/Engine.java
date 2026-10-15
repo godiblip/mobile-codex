@@ -28,6 +28,7 @@ public final class Engine {
     public interface Reply { void complete(JSONObject result, Throwable error); }
     /** Narrow in-process seam for protocol regression tests; production always uses RpcClient. */
     interface TestTransport { JSONObject call(String method, JSONObject params) throws Exception; }
+    interface TestAgentTransport { void handle(String action, JSONObject args, Reply reply); }
     public static final class Approval {
         public final String id = UUID.randomUUID().toString();
         public final String title, message;
@@ -46,6 +47,7 @@ public final class Engine {
     private Process process;
     private RpcClient rpc;
     private TestTransport testTransport;
+    private TestAgentTransport testAgentTransport;
     // Test-only startup validation keeps account-switch rollback tests on the
     // same account/read + rate-limit path as the real app-server startup.
     private boolean testAccountValidation;
@@ -117,23 +119,38 @@ public final class Engine {
     private final DevTools devTools;
     private final LinuxRuntime linux;
     private AgentBridge agentBridge;
-    /** Tool permission of the invited agent that is answering, keyed by the chat's local id. */
+    /** Tool permission keyed by a unique agent turn, never shared between participants. */
     private final Map<String, JSONObject> roomLeases = new ConcurrentHashMap<>();
     private volatile Process roomCommand;
+    private volatile String roomCommandRunId = "";
     /** Agents invited before a new chat's first message creates its session. */
     private JSONArray draftAgents = new JSONArray();
     private JSONArray agentProviders = new JSONArray();
-    /** One message's answering order: Codex first, then invited agents and their @-calls. */
+    /** A parallel reply batch; explicit follow-ups start after the batch finishes. */
+    private static final class AgentTurn {
+        final String id, runId = UUID.randomUUID().toString(), cursorId;
+        final JSONObject message;
+        final int depth;
+        String status = "responding";
+        AgentTurn(String id, JSONObject message, String cursorId, int depth) {
+            this.id = id; this.message = message; this.cursorId = cursorId; this.depth = depth;
+        }
+    }
     private static final class GroupRun {
         final String local;
         final ArrayDeque<String[]> queue = new ArrayDeque<>();
         final Set<String> seen = new HashSet<>(), edges = new HashSet<>();
-        int count, depth, codexFrom = -1; boolean cancelled;
-        String current = "", runId = "", messageId = "", model = "", effort = "";
+        final Map<String, AgentTurn> active = new LinkedHashMap<>();
+        JSONArray context;
+        int count, depth, codexFrom = -1; boolean cancelled, codexRunning;
+        String current = "", model = "", effort = "", codexCursor = "", writer = "";
         GroupRun(String local) { this.local = local; }
     }
+    private record AgentConsent(GroupRun group, AgentTurn turn, JSONObject params, Reply reply) {}
+    private final ArrayDeque<AgentConsent> agentConsents = new ArrayDeque<>();
     private volatile GroupRun group;
     private Approval agentApproval;
+    private AgentConsent activeAgentConsent;
     private String addAccountRestoreKey = "";
     private record PendingRequest(RpcClient connection, Object id, String method, JSONObject params) {}
 
@@ -204,6 +221,7 @@ public final class Engine {
     public void observe(Ui observer) { observers.add(observer); io.execute(() -> { if (observers.contains(observer)) { observer.event("state", snapshot()); if (pendingApproval != null && !pendingApproval.decision.isDone()) observer.approval(pendingApproval); if (pendingConsultation != null) observer.event("pro.consult", (JSONObject) uiJsonCopy(pendingConsultation.prepared)); requests.forEach((key, request) -> observer.event("server.request", obj("key", key, "method", request.method, "params", requestUiParams(request)))); } }); }
     public void unobserve(Ui observer) { observers.remove(observer); }
     void setTestTransport(TestTransport value) { testTransport = value; }
+    void setTestAgentTransport(TestAgentTransport value) { testAgentTransport = value; }
     void setTestAccountValidation(boolean value) { testAccountValidation = value; }
     File processHomeForTest() { return processHome; }
     private void event(String name, JSONObject data) { Ui current = ui; if (current != null) current.event(name, data); for (Ui observer : observers) if (observer != current) observer.event(name, data); }
@@ -416,7 +434,7 @@ public final class Engine {
         return moved;
     }
     public void updatesChanged(JSONObject data) { event("updates.changed", data); }
-    public boolean canInstallUpdate() { return (agentBridge == null || !agentBridge.busy()) && roomLeases.isEmpty() && group == null && runningTurns.isEmpty() && !hasProOperations() && !VoiceInput.active() && !linux.status().optBoolean("busy") && !terminal.busy(); }
+    public boolean canInstallUpdate() { return (agentBridge == null || !agentBridge.busy()) && (roomCommand == null || !roomCommand.isAlive()) && roomLeases.isEmpty() && group == null && runningTurns.isEmpty() && !hasProOperations() && !VoiceInput.active() && !linux.status().optBoolean("busy") && !terminal.busy(); }
     public void voiceInputChanged() { event("voice.changed", obj()); }
     public void phoneStateChanged() { io.execute(this::publish); }
     public void handle(String action, JSONObject args, Reply reply) {
@@ -442,7 +460,7 @@ public final class Engine {
         if (action.equals("linux.cancel")) { linux.cancel(); reply.complete(linux.status(), null); return; }
         io.execute(() -> {
             try {
-                if (Set.of("terminal.run", "files.mutate", "changes.restore", "recovery.restore").contains(action) && !roomLeases.isEmpty())
+                if (Set.of("terminal.run", "files.mutate", "changes.restore", "recovery.restore").contains(action) && (!roomLeases.isEmpty() || (roomCommand != null && roomCommand.isAlive())))
                     throw new IOException(t("초대한 에이전트의 작업을 중지한 뒤 파일이나 명령을 실행해 주세요."));
                 switch (action) {
                     case "state" -> reply.complete(snapshot(), null);
@@ -629,7 +647,7 @@ public final class Engine {
                         consultGrants.remove(threadId);
                         GroupRun run = group;
                         if (run != null && run.local.equals(threadId)) cancelGroup(run);
-                        if (!turnId.isEmpty()) call("turn/interrupt", obj("threadId", activeCodexThreadId(), "turnId", turnId));
+                        else if (!turnId.isEmpty()) call("turn/interrupt", obj("threadId", activeCodexThreadId(), "turnId", turnId));
                         if (pendingApproval != null) pendingApproval.decision.complete(false);
                         reply.complete(obj("ok", true), null);
                     }
@@ -682,6 +700,7 @@ public final class Engine {
             throw new IOException(t("Pro 문의를 기다리는 대화는 먼저 중지해 주세요."));
     }
     private void ensureProjectIdle(String key) throws IOException {
+        if(roomCommand!=null&&roomCommand.isAlive())throw new IOException(t("이전 명령이 종료 중입니다. 잠시 후 다시 보내 주세요."));
         if(roomLeases.values().stream().anyMatch(lease->key.equals(lease.optString("projectKey"))))throw new IOException(t("이 프로젝트에서 답하는 에이전트를 먼저 중지해 주세요."));
         for (int i = 0; i < sessions.length(); i++) {
             JSONObject target = sessions.optJSONObject(i);
@@ -689,6 +708,7 @@ public final class Engine {
         }
     }
     private void ensureEngineIdle() throws IOException {
+        if(roomCommand!=null&&roomCommand.isAlive())throw new IOException(t("이전 명령이 종료 중입니다. 잠시 후 다시 보내 주세요."));
         if(!roomLeases.isEmpty()||group!=null)throw new IOException(t("초대한 에이전트의 답변을 먼저 중지해 주세요."));
         if (hasRunningTurns() || hasProOperations()) throw new IOException(t("진행 중인 작업을 먼저 중지해 주세요."));
     }
@@ -1241,6 +1261,12 @@ public final class Engine {
         if (text.isEmpty() || text.length() > 50000) throw new IOException(t("추가 지시는 1~50,000자로 입력해 주세요."));
         if (!busy || turnId.isEmpty() || !turnId.equals(args.optString("expectedTurnId"))) throw new IOException(t("진행 중인 작업이 변경되거나 종료되었습니다. 새 메시지로 보내 주세요."));
         JSONArray input = input(text, args.optJSONArray("attachments"), args.optJSONArray("skills"), args.optJSONArray("mentions"));
+        GroupRun interruptedGroup = group;
+        if (interruptedGroup != null && interruptedGroup.local.equals(threadId)) {
+            Set<String> alreadySent = new HashSet<>();
+            for (int i = 0; i < interruptedGroup.context.length(); i++) alreadySent.add(interruptedGroup.context.optJSONObject(i).optString("id"));
+            input = prepend(input, AgentGroup.codexContext(active, active.getJSONArray("messages"), active.getJSONArray("messages").length(), alreadySent));
+        }
         ConsultGrant consultation = null;
         if (args.optBoolean("consultPro")) {
             requireConsultationTool(); consultation = new ConsultGrant(turnId, active.optString("workspaceKey"));
@@ -1253,6 +1279,10 @@ public final class Engine {
         JSONObject message = userMessage(text, args.optJSONArray("attachments"), args.optJSONArray("skills"), args.optJSONArray("mentions"));
         if (consultation != null) message.put("consultPro", true);
         active.getJSONArray("messages").put(message);
+        if (interruptedGroup != null && interruptedGroup.local.equals(threadId)) {
+            active.put("codexCursorId", message.optString("id"));
+            cancelGroup(interruptedGroup, false);
+        }
         persist(); publish();
     }
     private File reviewDirectory() throws IOException {
@@ -1569,6 +1599,7 @@ public final class Engine {
     private void send(String text, String model, String effort, JSONArray attachmentIds, JSONArray skills, JSONArray mentions, Boolean fastMode, boolean consultPro) throws Exception {
         // A new message from the user ends the previous answering order.
         GroupRun previousRun = group; if (previousRun != null) cancelGroup(previousRun);
+        if (roomCommand != null && roomCommand.isAlive()) throw new IOException(t("이전 명령이 종료 중입니다. 잠시 후 다시 보내 주세요."));
         if (ProContextBuilder.MODEL_ID.equals(model)) throw new IOException(t("GPT-6-Pro 웹 모델은 전용 전송 경로를 사용해야 합니다."));
         if (text.length() > 50000) throw new IOException(t("메시지는 최대 50,000자까지 입력할 수 있습니다."));
         documents.requireWorkspaceAvailable();
@@ -1609,6 +1640,7 @@ public final class Engine {
             active.getJSONArray("messages").put(userMessage(text, attachmentIds, skills, mentions));
             draftAgents = new JSONArray();
             GroupRun run = new GroupRun(threadId); run.model = actualModel; run.effort = effort;
+            run.context = new JSONArray(active.getJSONArray("messages").toString());
             for (String id : targets) run.queue.add(new String[]{id, "0"});
             group = run; persist(); advanceGroup(run); return;
         }
@@ -1638,7 +1670,8 @@ public final class Engine {
             draftAgents = new JSONArray();
             if (AgentGroup.grouped(active)) {
                 GroupRun run = new GroupRun(targetLocal); run.model = actualModel; run.effort = effort;
-                run.current = AgentGroup.CODEX; run.count = 1; run.seen.add(AgentGroup.CODEX); run.codexFrom = active.getJSONArray("messages").length() - 1;
+                run.current = AgentGroup.CODEX; run.codexRunning = true; run.count = 1; run.seen.add(AgentGroup.CODEX); run.codexFrom = active.getJSONArray("messages").length() - 1;
+                run.context = new JSONArray(active.getJSONArray("messages").toString()); run.codexCursor = message.optString("id");
                 for (String id : targets) if (!id.equals(AgentGroup.CODEX)) run.queue.add(new String[]{id, "0"});
                 group = run;
             }
@@ -1651,6 +1684,7 @@ public final class Engine {
             else consultGrants.remove(targetLocal);
             syncCurrentTurn();
             persist(); publish();
+            if (group != null && group.local.equals(targetLocal)) advanceGroup(group);
         } catch (Exception e) { syncCurrentTurn(); status = t("요청 실패"); publish(); throw e; }
     }
     private void resume(String id) throws Exception {
@@ -1904,7 +1938,7 @@ public final class Engine {
                 taskNotification(interrupted ? "interrupted" : failed ? "failed" : "completed",
                     interrupted ? t("작업 중지됨") : failed ? t("작업 실패") : t("답변 완료"),
                     interrupted ? t("Codex 작업이 중지되었습니다.") : failed ? t("Codex 작업이 실패했습니다.") : t("Codex가 작업을 마쳤습니다."), eventThreadId, "");
-                if (currentThread && pendingApproval != null) pendingApproval.decision.complete(false);
+                if (currentThread && pendingApproval != null && pendingApproval != agentApproval) pendingApproval.decision.complete(false);
                 if (target != null) {
                     JSONObject previous = active;
                     try {
@@ -1919,7 +1953,8 @@ public final class Engine {
                 }
                 persist(); publish();
                 GroupRun run = group;
-                if (run != null && target != null && run.local.equals(eventThreadId) && AgentGroup.CODEX.equals(run.current)) codexAnswered(run, target, interrupted || failed);
+                if (run != null && target != null && run.local.equals(eventThreadId) && run.codexRunning) codexAnswered(run, target, interrupted || failed);
+                drainAgentConsents();
             } else if (method.equals("error")) {
                 JSONObject error = p.optJSONObject("error");
                 event("error", obj("threadId", eventThreadId, "message", error == null ? t("Codex 요청 오류") : error.optString("message", t("Codex 요청 오류"))));
@@ -2076,6 +2111,7 @@ public final class Engine {
                 JSONObject result = documents.commit(mutation);
                 filesChanged(result); reply.complete(result, null);
             } catch (Throwable e) { reply.complete(null, unwrap(e)); }
+            finally { drainAgentConsents(); }
         }, io);
         Ui current = ui;
         taskNotification("approval", t("승인 필요"), approval.title, threadId, approval.id);
@@ -2183,7 +2219,7 @@ public final class Engine {
                     case "host.approve" -> { agentApprove(p, reply); return; }
                     case "host.disconnected" -> {
                         GroupRun run=group;
-                        if(run!=null&&!run.runId.isBlank())agentRunEvent(obj("runId",run.runId,"kind","error","message",t("에이전트 연결이 종료되었습니다.")));
+                        if(run!=null)for(AgentTurn turn:new ArrayList<>(run.active.values()))agentRunEvent(obj("runId",turn.runId,"kind","error","message",t("에이전트 연결이 종료되었습니다.")));
                         if(roomCommand!=null)roomCommand.destroy();
                         roomLeases.clear();reply.complete(obj(),null);
                     }
@@ -2193,7 +2229,8 @@ public final class Engine {
         });
     }
     private JSONObject requireRoomLease(JSONObject p) throws IOException {
-        JSONObject lease=roomLeases.get(p.optString("roomId"));if(lease==null)throw new IOException(t("발언이 종료되었습니다."));
+        JSONObject lease=roomLeases.get(p.optString("runId"));if(lease==null)throw new IOException(t("발언이 종료되었습니다."));
+        if(!p.optString("roomId").equals(lease.optString("roomId")))throw new IOException("Room changed");
         if(p.has("mode")&&!p.optString("mode").equals(lease.optString("mode")))throw new IOException("Room permission changed");
         if(p.has("projectKey")&&!p.optString("projectKey").equals(lease.optString("projectKey")))throw new IOException("Room project changed");
         return lease;
@@ -2201,7 +2238,7 @@ public final class Engine {
     private JSONArray roomTools(String mode,boolean mcp) throws Exception {
         JSONArray out=new JSONArray();if(mode.equals("chat"))return out;
         JSONArray all=ToolCatalog.all();
-        all.put(obj("type","function","name","mobile_exec","description","Run one user-approved shell command in the selected project. Requires write mode and explicit approval for every call.",
+        all.put(obj("type","function","name","mobile_exec","description","Run one shell command in the selected project. Requires write mode, the participant approval policy and the project write slot.",
             "inputSchema",obj("type","object","properties",obj("command",obj("type","string","maxLength",8000)),"required",array("command"),"additionalProperties",false)));
         for(int i=0;i<all.length();i++){
             JSONObject tool=all.getJSONObject(i);String name=tool.optString("name");
@@ -2217,6 +2254,13 @@ public final class Engine {
         if(mode.equals("chat")||(!read&&!mode.equals("write")))throw new IOException(t("이 에이전트에게 허용되지 않은 도구입니다."));
         if(!read&&permissionMode.equals("read-only"))throw new IOException(t("앱의 파일 권한이 읽기 전용입니다."));
         if(!read&&roomCommand!=null&&roomCommand.isAlive())throw new IOException(t("승인한 명령이 실행 중입니다. 명령이 끝난 뒤 다음 작업을 요청해 주세요."));
+        if(!read){
+            JSONObject grant=lease.optJSONObject("grant");lease.remove("grant");
+            if(group==null||!lease.optString("runId").equals(group.writer)||projectHasCodexTurn(key)
+                    ||grant==null||!tool.equals(grant.optString("name"))
+                    ||!args.toString().equals(new JSONObject(grant.optString("detail","{}")).toString()))
+                throw new IOException(t("이 작업에 대한 승인이 없거나 작업 차례가 바뀌었습니다."));
+        }
         if(tool.equals("mobile_exec")){
             String command=args.getString("command");if(command.isBlank()||command.length()>8000)throw new IOException("Invalid command");
             withWorkspace(key,()->{
@@ -2224,11 +2268,11 @@ public final class Engine {
                 File supervisor=new File(context.getFilesDir(),"rooms/runtime/command-supervisor.py");
                 ProcessBuilder builder=new ProcessBuilder("python3",supervisor.getAbsolutePath()).directory(cwd).redirectErrorStream(true);devTools.configure(builder,codexHome.root(),runtimeAliases());
                 builder.command().set(0,builder.environment().get("MC_PYTHON"));
-                linux.configureEnvironment(builder.environment());Process child=builder.start();roomCommand=child;
+                linux.configureEnvironment(builder.environment());Process child=builder.start();roomCommand=child;roomCommandRunId=lease.optString("runId");
                 child.getOutputStream().write((obj("command",command).toString()+"\n").getBytes(StandardCharsets.UTF_8));child.getOutputStream().close();
                 Thread worker=new Thread(()->{
                     try{ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[4096];int n;while((n=child.getInputStream().read(b))!=-1){if(out.size()+n>1024*1024){child.destroy();throw new IOException("Command output exceeded 1 MiB");}out.write(b,0,n);}int code=child.waitFor();reply.complete(obj("exitCode",code,"output",new String(out.toByteArray(),StandardCharsets.UTF_8)),null);}
-                    catch(Exception e){child.destroy();try{child.waitFor(3,TimeUnit.SECONDS);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}reply.complete(null,e);}finally{if(roomCommand==child&&!child.isAlive())roomCommand=null;}
+                    catch(Exception e){child.destroy();try{child.waitFor(3,TimeUnit.SECONDS);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}reply.complete(null,e);}finally{if(roomCommand==child&&!child.isAlive()){roomCommand=null;roomCommandRunId="";}if(!io.isShutdown())io.execute(()->{drainAgentConsents();publish();});}
                 },"room-command");worker.setDaemon(true);worker.start();
                 approvalTimer.schedule(()->{if(child.isAlive())child.destroy();},60,TimeUnit.SECONDS);
                 return null;
@@ -2244,7 +2288,7 @@ public final class Engine {
     }
     // ---- Invited agents -------------------------------------------------------------------
     // The chat's message list is the one shared history. Codex answers through its normal
-    // turn; Claude/Antigravity answer through AgentBridge, one after another.
+    // turn; Claude/Antigravity stream concurrently through AgentBridge.
     private AgentBridge agentBridge() throws Exception {
         if (agentBridge == null) synchronized (this) {
             if (agentBridge == null) agentBridge = new AgentBridge(context, devTools, codexHome.root(), runtimeAliases(), this::roomHost, this::agentBridgeEvent);
@@ -2272,7 +2316,7 @@ public final class Engine {
             JSONObject agent = source.optJSONObject(i); if (agent == null) continue;
             out.put(obj("id", agent.optString("id"), "provider", agent.optString("provider"), "name", agent.optString("name"),
                 "model", agent.optString("model"), "effort", agent.optString("effort"), "mode", agent.optString("mode", "chat"),
-                "character", agent.optString("character"), "enabled", agent.optBoolean("enabled", true)));
+                "approvalMode", agent.optString("approvalMode", "ask"), "character", agent.optString("character"), "enabled", agent.optBoolean("enabled", true)));
         }
         return out;
     }
@@ -2280,7 +2324,10 @@ public final class Engine {
         GroupRun run = group;
         if (run == null || threadId.isBlank() || !run.local.equals(threadId)) return JSONObject.NULL;
         JSONArray queue = new JSONArray(); for (String[] next : run.queue) queue.put(next[0]);
-        return obj("current", run.current, "queue", queue);
+        JSONArray active = new JSONArray(); JSONObject states = obj();
+        if (run.codexRunning) { active.put(AgentGroup.CODEX); try { states.put(AgentGroup.CODEX, "responding"); } catch (Exception ignored) {} }
+        for (AgentTurn turn : run.active.values()) { active.put(turn.id); try { states.put(turn.id, turn.status); } catch (Exception ignored) {} }
+        return obj("current", run.current, "active", active, "states", states, "queue", queue);
     }
     /** Invites, reconfigures or removes agents of the open chat (or of the next new chat). */
     private void setAgents(JSONArray changes) throws Exception {
@@ -2296,11 +2343,15 @@ public final class Engine {
             String id = change.optString("id"), mode = change.optString("mode", "");
             if (AgentGroup.agent(id) == null) throw new IOException(t("지원하지 않는 에이전트입니다."));
             if (!mode.isEmpty() && !AgentGroup.MODES.contains(mode)) throw new IOException(t("잘못된 권한입니다."));
+            String approval = change.optString("approvalMode", "ask");
+            if (!Set.of("ask", "allow-all", "auto-review").contains(approval) || ("auto-review".equals(approval) && !id.equals("claude")))
+                throw new IOException(t("이 에이전트가 지원하지 않는 승인 방식입니다."));
             JSONObject agent = null;
             for (int j = 0; j < next.length(); j++) if (next.getJSONObject(j).optString("id").equals(id)) agent = next.getJSONObject(j);
             if (agent == null) {
                 if (change.has("enabled") && !change.optBoolean("enabled")) continue;
                 JSONObject created = AgentGroup.newAgent(id, change.optString("model"), change.optString("effort"), mode.isEmpty() ? "chat" : mode);
+                created.put("approvalMode", approval);
                 if (change.has("character") && change.optString("character").trim().length() <= 120) created.put("character", change.optString("character").trim());
                 next.put(created);
                 continue;
@@ -2308,6 +2359,7 @@ public final class Engine {
             if (change.has("model")) agent.put("model", change.optString("model"));
             if (change.has("effort")) agent.put("effort", change.optString("effort"));
             if (!mode.isEmpty()) agent.put("mode", mode);
+            if (change.has("approvalMode")) agent.put("approvalMode", approval);
             // A character pack id chosen in the participants panel; empty keeps the letter avatar.
             if (change.has("character")) agent.put("character", change.optString("character").trim().length() > 120 ? "" : change.optString("character").trim());
             // A removed agent keeps its own session and cursor, so a re-invite continues from there.
@@ -2331,48 +2383,72 @@ public final class Engine {
         int at = messages == null ? -1 : AgentGroup.indexOf(messages, id);
         return at < 0 ? null : messages.optJSONObject(at);
     }
-    private void queueFollowUps(GroupRun run, JSONObject session, String text, String self) {
-        if (run.depth >= AgentGroup.MAX_DEPTH) return;
+    private void queueFollowUps(GroupRun run, JSONObject session, String text, String self, int depth) {
+        if (depth >= AgentGroup.MAX_DEPTH) return;
         for (String target : AgentGroup.followUps(text, session, self)) {
             String edge = self + ">" + target;
-            boolean queued = run.queue.stream().anyMatch(next -> next[0].equals(target));
-            if (run.seen.contains(target) || run.edges.contains(edge) || queued) continue;
-            run.edges.add(edge); run.queue.add(new String[]{target, String.valueOf(run.depth + 1)});
+            if (run.seen.contains(target) || run.edges.contains(edge) || run.queue.stream().anyMatch(next -> next[0].equals(target))) continue;
+            run.edges.add(edge); run.queue.add(new String[]{target, String.valueOf(depth + 1)});
         }
+    }
+    private void updateGroupCurrent(GroupRun run) {
+        run.current = run.codexRunning ? AgentGroup.CODEX : run.active.values().stream().map(turn -> turn.id).findFirst().orElse("");
+        syncCurrentTurn();
     }
     private void codexAnswered(GroupRun run, JSONObject session, boolean stopped) {
         if (group != run) return;
-        if (stopped) { finishGroup(run); return; }
+        run.codexRunning = false;
         try {
-            JSONArray messages = session.getJSONArray("messages");
-            StringBuilder reply = new StringBuilder();
-            for (int i = Math.max(0, run.codexFrom + 1); i < messages.length(); i++) {
-                JSONObject m = messages.getJSONObject(i);
-                if ("assistant".equals(m.optString("role")) && m.optString("agent").isBlank()) reply.append(m.optString("text")).append('\n');
+            if (!stopped) {
+                JSONArray messages = session.getJSONArray("messages");
+                StringBuilder reply = new StringBuilder();
+                for (int i = Math.max(0, run.codexFrom + 1); i < messages.length(); i++) {
+                    JSONObject m = messages.getJSONObject(i);
+                    if ("assistant".equals(m.optString("role")) && m.optString("agent").isBlank()) reply.append(m.optString("text")).append('\n');
+                }
+                // Mark the input snapshot consumed, not concurrently arriving peer answers.
+                session.put("codexCursorId", run.codexCursor);
+                queueFollowUps(run, session, reply.toString(), AgentGroup.CODEX, run.depth);
             }
-            if (messages.length() > 0) session.put("codexCursorId", messages.getJSONObject(messages.length() - 1).optString("id"));
-            queueFollowUps(run, session, reply.toString(), AgentGroup.CODEX);
         } catch (Exception ignored) {}
-        run.current = ""; persist();
-        advanceGroup(run);
+        updateGroupCurrent(run); persist(); drainAgentConsents(); advanceGroup(run);
     }
     private void advanceGroup(GroupRun run) {
-        while (group == run && !run.cancelled) {
-            JSONObject session = session(run.local);
-            if (session == null || run.queue.isEmpty() || run.count >= AgentGroup.MAX_TURNS) { finishGroup(run); return; }
-            String[] next = run.queue.poll();
-            run.depth = Integer.parseInt(next[1]);
-            if (next[0].equals(AgentGroup.CODEX)) { if (startCodexForGroup(run, session)) return; continue; }
-            JSONObject member = AgentGroup.member(session, next[0]);
-            if (member == null) continue;
-            run.count++; run.seen.add(member.optString("id"));
-            if (startAgent(run, session, member)) return;
+        if (group != run || run.cancelled) return;
+        JSONObject owner = session(run.local);
+        if (owner == null) { cancelGroup(run); return; }
+        // Initial recipients share one snapshot. Chained mentions wait for the batch,
+        // so they receive all the preceding answers rather than a partial stream.
+        if (!run.queue.isEmpty() && Integer.parseInt(run.queue.peek()[1]) > 0) {
+            if (run.codexRunning || !run.active.isEmpty()) { updateGroupCurrent(run); publish(); return; }
+            try { run.context = new JSONArray(owner.getJSONArray("messages").toString()); }
+            catch (Exception e) { cancelGroup(run); return; }
         }
+        int batchDepth = run.queue.isEmpty() ? 0 : Integer.parseInt(run.queue.peek()[1]);
+        while (!run.queue.isEmpty() && run.count < AgentGroup.MAX_TURNS && Integer.parseInt(run.queue.peek()[1]) == batchDepth) {
+            String[] next = run.queue.poll();
+            if (!run.seen.add(next[0])) continue;
+            run.count++;
+            if (next[0].equals(AgentGroup.CODEX)) {
+                run.depth = batchDepth;
+                startCodexForGroup(run, owner);
+            } else {
+                JSONObject member = AgentGroup.member(owner, next[0]);
+                if (member != null) startAgent(run, owner, member, batchDepth);
+            }
+        }
+        if (run.count >= AgentGroup.MAX_TURNS) run.queue.clear();
+        updateGroupCurrent(run);
+        if (!run.codexRunning && run.active.isEmpty()) {
+            if (run.queue.isEmpty()) finishGroup(run);
+            else advanceGroup(run);
+        } else { persist(); publish(); }
     }
-    /** Codex answers an @-call from another agent; only the open chat owns a Codex turn. */
-    private boolean startCodexForGroup(GroupRun run, JSONObject session) {
+    /** Codex can be called by a completed batch, after its project writers finish. */
+    private void startCodexForGroup(GroupRun run, JSONObject session) {
         try {
-            if (active != session || !run.local.equals(threadId)) return false;
+            if (active != session || !run.local.equals(threadId)) return;
+            if (roomCommand != null && roomCommand.isAlive()) throw new IOException(t("이전 명령이 종료 중입니다. 잠시 후 다시 보내 주세요."));
             start();
             if (account.length() == 0) throw new IOException(t("ChatGPT 계정으로 로그인해 주세요."));
             if (!active.optString("workspaceKey").equals(documents.key())) throw new IOException(t("이 대화의 원래 작업 폴더를 다시 연결해 주세요."));
@@ -2382,130 +2458,204 @@ public final class Engine {
                 active.put("codexThreadId", remote); serverThreadId = remote;
             } else resumeRemote(false, model);
             JSONArray messages = active.getJSONArray("messages");
-            String context = AgentGroup.codexContext(active, messages, messages.length(), Set.of()) + "\n\n다른 참가자가 Codex를 호출했습니다. 위 대화에 이어서 답하세요.";
+            String context = AgentGroup.codexContext(active, run.context, run.context.length(), Set.of()) + "\n\n다른 참가자가 Codex를 호출했습니다. 위 대화에 이어서 답하세요.";
             JSONObject params = obj("threadId", activeCodexThreadId(), "input", array(obj("type", "text", "text", context, "text_elements", new JSONArray())),
                 "cwd", projectDirectory().getAbsolutePath(), "approvalPolicy", approvalPolicy(), "approvalsReviewer", approvalsReviewer());
             if (!model.isBlank()) params.put("model", model);
             if (!run.effort.isBlank()) params.put("effort", run.effort);
-            run.current = AgentGroup.CODEX; run.count++; run.seen.add(AgentGroup.CODEX); run.codexFrom = messages.length() - 1;
+            run.codexFrom = messages.length() - 1; run.codexCursor = lastMessageId(run.context);
             JSONObject turn = call("turn/start", params).optJSONObject("turn");
             String started = turn == null ? "" : turn.optString("id");
             if (!started.isBlank()) runningTurns.put(threadId, started);
-            syncCurrentTurn(); persist(); publish();
-            return true;
+            run.codexRunning = true;
         } catch (Exception e) {
-            run.current = "";
+            run.codexRunning = false;
             event("error", obj("threadId", run.local, "message", t("Codex가 이어서 답하지 못했습니다: ") + unwrap(e).getMessage()));
-            return false;
         }
     }
-    private boolean startAgent(GroupRun run, JSONObject session, JSONObject member) {
-        String id = member.optString("id"), mode = member.optString("mode", "chat"), key = session.optString("workspaceKey");
-        JSONArray messages = session.optJSONArray("messages");
-        JSONObject message = obj("id", "agent-" + UUID.randomUUID(), "role", "assistant", "agent", id, "agentName", member.optString("name", AgentGroup.name(id)),
+    private static String lastMessageId(JSONArray messages) {
+        JSONObject last = messages == null || messages.length() == 0 ? null : messages.optJSONObject(messages.length() - 1);
+        return last == null ? "" : last.optString("id");
+    }
+    private void agentRequest(String action, JSONObject args, Reply reply) throws Exception {
+        if (testAgentTransport != null) testAgentTransport.handle(action, args, reply);
+        else agentBridge().handle(action, args, reply);
+    }
+    private void stopAgent(String runId) {
+        if (testAgentTransport != null) testAgentTransport.handle("agents.stop", obj("runId", runId), (r, e) -> {});
+        else if (agentBridge != null) agentBridge.stop(runId);
+    }
+    private void startAgent(GroupRun run, JSONObject owner, JSONObject member, int depth) {
+        String id = member.optString("id"), mode = member.optString("mode", "chat"), key = owner.optString("workspaceKey");
+        JSONObject message = obj("id", UUID.randomUUID().toString(), "role", "assistant", "agent", id, "agentName", AgentGroup.name(id),
             "text", "", "status", "streaming", "createdAt", System.currentTimeMillis());
+        AgentTurn turn = new AgentTurn(id, message, lastMessageId(run.context), depth);
+        run.active.put(turn.runId, turn);
         try {
             if (!mode.equals("chat")) {
                 if (key.isBlank()) throw new IOException(t("작업 폴더가 없는 대화입니다. 참가자 설정에서 권한을 '대화만'으로 바꿔 주세요."));
                 if (terminal.busy()) throw new IOException(t("실행 중인 터미널 명령을 먼저 중지해 주세요."));
                 withWorkspace(key, () -> { documents.requireWorkspaceAvailable(); return null; });
             }
-            String prompt = AgentGroup.agentPrompt(session, member, messages);
-            messages.put(message);
-            run.current = id; run.runId = UUID.randomUUID().toString(); run.messageId = message.getString("id");
-            String projectKey = mode.equals("chat") ? "" : key, runId = run.runId;
-            roomLeases.put(run.local, obj("roomId", run.local, "projectKey", projectKey, "mode", mode));
+            String projectKey = mode.equals("chat") ? "" : key;
+            roomLeases.put(turn.runId, obj("runId", turn.runId, "roomId", run.local, "projectKey", projectKey, "mode", mode,
+                "approvalMode", member.optString("approvalMode", "ask")));
             context.startForegroundService(new Intent(context, EngineService.class));
-            agentBridge().handle("agents.run", obj("runId", runId, "sessionId", run.local, "memberId", id, "provider", member.optString("provider"),
+            agentRequest("agents.run", obj("runId", turn.runId, "sessionId", run.local, "memberId", id, "provider", member.optString("provider"),
                 "model", member.optString("model"), "effort", member.optString("effort"), "mode", mode, "projectKey", projectKey,
-                "nativeSession", member.optString("nativeSession"), "prompt", prompt), (result, error) -> {
-                    if (error != null) io.execute(() -> agentRunEvent(obj("runId", runId, "kind", "error", "message", unwrap(error).getMessage())));
+                "approvalMode", member.optString("approvalMode", "ask"), "nativeSession", member.optString("nativeSession"),
+                "prompt", AgentGroup.agentPrompt(owner, member, run.context)), (result, error) -> {
+                    if (error != null) io.execute(() -> agentRunEvent(obj("runId", turn.runId, "kind", "error", "message", unwrap(error).getMessage())));
                 });
-            syncCurrentTurn(); persist(); publish();
-            return true;
         } catch (Exception e) {
-            roomLeases.remove(run.local); run.current = ""; run.runId = "";
-            try { if (AgentGroup.indexOf(messages, message.optString("id")) < 0) messages.put(message); message.put("status", "error").put("error", unwrap(e).getMessage()); } catch (Exception ignored) {}
-            persist(); publish();
-            return false;
+            try { owner.getJSONArray("messages").put(message); message.put("status", "error").put("error", unwrap(e).getMessage()); } catch (Exception ignored) {}
+            endAgentTurn(run, turn);
         }
+    }
+    private boolean appendAgentMessage(JSONObject owner, AgentTurn turn) throws Exception {
+        JSONArray messages = owner.getJSONArray("messages");
+        if (AgentGroup.indexOf(messages, turn.message.optString("id")) >= 0) return false;
+        messages.put(turn.message); return true;
     }
     private void agentRunEvent(JSONObject data) {
         GroupRun run = group;
-        if (run == null || run.runId.isBlank() || !run.runId.equals(data.optString("runId"))) return;
-        JSONObject session = session(run.local), message = findMessage(session, run.messageId), member = AgentGroup.member(session, run.current);
+        AgentTurn turn = run == null ? null : run.active.get(data.optString("runId"));
+        if (turn == null || run.cancelled) return;
+        JSONObject owner = session(run.local), message = turn.message, member = AgentGroup.member(owner, turn.id);
+        if (owner == null) { cancelGroup(run); return; }
         try {
             switch (data.optString("kind")) {
                 case "session" -> { if (member != null) { member.put("nativeSession", data.optString("id")); persist(); } }
+                case "status" -> {
+                    if (!Set.of("waiting", "approval").contains(turn.status)) turn.status = "working";
+                    publish();
+                }
                 case "delta" -> {
-                    if (message == null) return;
-                    message.put("text", message.optString("text") + data.optString("text"));
-                    if (run.local.equals(threadId)) event("message.delta", obj("threadId", run.local, "id", run.messageId, "delta", data.optString("text")));
+                    String delta = data.optString("text"); if (delta.isEmpty()) return;
+                    turn.status = "responding"; message.put("text", message.optString("text") + delta);
+                    if (appendAgentMessage(owner, turn)) { persist(); publish(); }
+                    else if (run.local.equals(threadId)) event("message.delta", obj("threadId", run.local, "id", message.optString("id"), "delta", delta));
                 }
                 case "final" -> {
-                    if (message != null) message.put("text", data.optString("text")).put("status", "complete");
-                    if (member != null) member.put("nativeSession", data.optString("sessionId")).put("cursorId", run.messageId);
-                    endAgentTurn(run);
-                    if (session != null) queueFollowUps(run, session, data.optString("text"), member == null ? "" : member.optString("id"));
+                    message.put("text", data.optString("text")).put("status", "complete"); appendAgentMessage(owner, turn);
+                    if (member != null) member.put("nativeSession", data.optString("sessionId")).put("cursorId", turn.cursorId);
+                    endAgentTurn(run, turn);
+                    queueFollowUps(run, owner, data.optString("text"), turn.id, turn.depth);
                     persist(); publish(); advanceGroup(run);
                 }
                 case "error" -> {
-                    // The agent's cursor stays put: its next turn receives these messages again.
-                    if (message != null) message.put("status", data.optBoolean("interrupted") ? "interrupted" : "error").put("error", data.optString("message"));
-                    endAgentTurn(run);
-                    persist(); publish();
-                    // Other participants still answer when one agent fails.
-                    advanceGroup(run);
+                    message.put("status", data.optBoolean("interrupted") ? "interrupted" : "error").put("error", data.optString("message"));
+                    appendAgentMessage(owner, turn); endAgentTurn(run, turn);
+                    persist(); publish(); advanceGroup(run);
                 }
                 default -> {}
             }
         } catch (Exception e) { event("error", obj("threadId", run.local, "message", unwrap(e).getMessage())); }
     }
-    private void endAgentTurn(GroupRun run) {
-        roomLeases.remove(run.local);
-        run.current = ""; run.runId = ""; run.messageId = "";
-        Approval approval = agentApproval; if (approval != null) approval.decision.complete(false);
+    private void endAgentTurn(GroupRun run, AgentTurn turn) {
+        roomLeases.remove(turn.runId); run.active.remove(turn.runId);
+        if (run.writer.equals(turn.runId)) run.writer = "";
+        if (roomCommand != null && turn.runId.equals(roomCommandRunId)) roomCommand.destroy();
+        if (activeAgentConsent != null && activeAgentConsent.turn == turn && agentApproval != null) agentApproval.decision.complete(false);
+        updateGroupCurrent(run); drainAgentConsents();
     }
     private void finishGroup(GroupRun run) {
         if (group != run) return;
-        group = null; roomLeases.remove(run.local);
+        group = null; drainAgentConsents();
         syncCurrentTurn(); persist(); publish(); stopServiceIfIdle();
     }
-    /** Stops the answering order: the running agent, its approval and anything still queued. */
+    /** User intervention revokes every live lease and all queued/chained turns. */
     private void cancelGroup(GroupRun run) {
-        run.cancelled = true; run.queue.clear();
-        String runId = run.runId;
-        if (!runId.isBlank() && agentBridge != null) agentBridge.stop(runId);
-        JSONObject message = findMessage(session(run.local), run.messageId);
-        try { if (message != null && "streaming".equals(message.optString("status"))) message.put("status", "interrupted"); } catch (Exception ignored) {}
-        Process child = roomCommand; if (child != null && roomLeases.containsKey(run.local)) child.destroy();
-        endAgentTurn(run);
-        if (group == run) group = null;
-        syncCurrentTurn(); persist(); publish();
+        cancelGroup(run, true);
     }
-    /** Agent tool calls that change files, run commands or control the phone ask the user here. */
+    private void cancelGroup(GroupRun run, boolean interruptCodex) {
+        run.cancelled = true; run.queue.clear();
+        if (interruptCodex && run.codexRunning) {
+            String running = runningTurns.getOrDefault(run.local, "");
+            JSONObject owner = session(run.local);
+            if (!running.isBlank() && owner != null) try { call("turn/interrupt", obj("threadId", owner.optString("codexThreadId"), "turnId", running)); }
+            catch (Exception e) { event("error", obj("threadId", run.local, "message", unwrap(e).getMessage())); }
+        }
+        for (AgentTurn turn : new ArrayList<>(run.active.values())) {
+            stopAgent(turn.runId);
+            try { turn.message.put("status", "interrupted"); } catch (Exception ignored) {}
+            endAgentTurn(run, turn);
+        }
+        if (group == run) group = null;
+        drainAgentConsents(); syncCurrentTurn(); persist(); publish();
+    }
+    private boolean validConsent(AgentConsent request) {
+        JSONObject lease = roomLeases.get(request.turn.runId);
+        return group == request.group && !request.group.cancelled && request.group.active.get(request.turn.runId) == request.turn
+            && lease != null && "write".equals(lease.optString("mode")) && !"read-only".equals(permissionMode);
+    }
+    private boolean projectHasCodexTurn(String key) {
+        for (String local : runningTurns.keySet()) {
+            JSONObject owner = session(local);
+            if (owner != null && key.equals(owner.optString("workspaceKey"))) return true;
+        }
+        return false;
+    }
+    private boolean canWrite(AgentConsent request) {
+        JSONObject lease = roomLeases.get(request.turn.runId);
+        return lease != null && !projectHasCodexTurn(lease.optString("projectKey"))
+            && (request.group.writer.isBlank() || request.group.writer.equals(request.turn.runId))
+            && (roomCommand == null || !roomCommand.isAlive());
+    }
+    /** Approval and the project write slot are independent gates. */
     private void agentApprove(JSONObject p, Reply reply) {
-        GroupRun run = group;
-        if (run == null || run.runId.isBlank() || !run.runId.equals(p.optString("runId"))) { reply.complete(obj("allow", false), null); return; }
-        if (pendingApproval != null && !pendingApproval.decision.isDone()) { reply.complete(null, new IOException(t("다른 승인 요청을 확인 중입니다."))); return; }
-        String detail = p.optString("detail");
-        Approval approval = new Approval(AgentGroup.name(p.optString("memberId")) + " · " + p.optString("title"), detail.length() > 12000 ? detail.substring(0, 12000) + "\n…" : detail);
-        pendingApproval = approval; agentApproval = approval;
-        JSONObject session = session(run.local);
-        try { if (session != null) { session.put("approvalPending", true); persist(); publish(); } } catch (Exception ignored) {}
-        ScheduledFuture<?> timeout = approvalTimer.schedule(() -> approval.decision.complete(false), 3, TimeUnit.MINUTES);
-        approval.decision.whenCompleteAsync((approved, error) -> {
-            timeout.cancel(false);
-            if (pendingApproval == approval) pendingApproval = null;
-            if (agentApproval == approval) agentApproval = null;
-            try { JSONObject owner = session(run.local); if (owner != null) { owner.put("approvalPending", false); persist(); publish(); } } catch (Exception ignored) {}
-            reply.complete(obj("allow", error == null && Boolean.TRUE.equals(approved) && group == run && !run.cancelled), null);
-        }, io);
-        Ui current = ui;
-        taskNotification("approval", t("승인 필요"), approval.title, run.local, approval.id);
-        if (current != null) current.approval(approval);
-        for (Ui observer : observers) if (observer != current) observer.approval(approval);
-        if (current == null && observers.isEmpty()) approval.decision.complete(false);
+        GroupRun run = group; AgentTurn turn = run == null ? null : run.active.get(p.optString("runId"));
+        if (turn == null || !turn.id.equals(p.optString("memberId")) || !run.local.equals(p.optString("sessionId"))) {
+            reply.complete(obj("allow", false), null); return;
+        }
+        AgentConsent request = new AgentConsent(run, turn, p, reply);
+        if (!validConsent(request) || agentConsents.size() >= 32) { reply.complete(obj("allow", false), null); return; }
+        agentConsents.add(request); turn.status = "waiting"; drainAgentConsents(); publish();
+    }
+    private void grantConsent(AgentConsent request, boolean allowed) {
+        boolean grant = allowed && validConsent(request) && canWrite(request);
+        if (grant) {
+            request.group.writer = request.turn.runId; request.turn.status = "working";
+            JSONObject lease = roomLeases.get(request.turn.runId);
+            // A single grant is bound to this exact tool and arguments, never a reusable bypass.
+            try { lease.put("grant", obj("name", request.params.optString("title"), "detail", request.params.optString("detail"))); } catch (Exception ignored) {}
+        } else request.turn.status = "responding";
+        request.reply.complete(obj("allow", grant), null);
+    }
+    private void drainAgentConsents() {
+        if (pendingApproval != null && !pendingApproval.decision.isDone()) return;
+        Iterator<AgentConsent> it = agentConsents.iterator();
+        while (it.hasNext()) {
+            AgentConsent request = it.next();
+            if (!validConsent(request)) { it.remove(); request.reply.complete(obj("allow", false), null); continue; }
+            if (!canWrite(request)) continue;
+            it.remove();
+            JSONObject lease = roomLeases.get(request.turn.runId);
+            String policy = lease.optString("approvalMode", "ask");
+            if ("allow-all".equals(policy) || ("auto-review".equals(policy) && "claude".equals(request.turn.id))) {
+                grantConsent(request, true); continue;
+            }
+            String detail = request.params.optString("detail");
+            Approval approval = new Approval(AgentGroup.name(request.turn.id) + " · " + request.params.optString("title"),
+                detail.length() > 12000 ? detail.substring(0, 12000) + "\n…" : detail);
+            pendingApproval = approval; agentApproval = approval; activeAgentConsent = request; request.turn.status = "approval";
+            try { JSONObject owner = session(request.group.local); if (owner != null) owner.put("approvalPending", true); } catch (Exception ignored) {}
+            ScheduledFuture<?> timeout = approvalTimer.schedule(() -> approval.decision.complete(false), 3, TimeUnit.MINUTES);
+            approval.decision.whenCompleteAsync((approved, error) -> {
+                timeout.cancel(false);
+                if (pendingApproval == approval) pendingApproval = null;
+                if (agentApproval == approval) { agentApproval = null; activeAgentConsent = null; }
+                try { JSONObject owner = session(request.group.local); if (owner != null) owner.put("approvalPending", false); } catch (Exception ignored) {}
+                grantConsent(request, error == null && Boolean.TRUE.equals(approved));
+                drainAgentConsents(); persist(); publish();
+            }, io);
+            Ui current = ui;
+            taskNotification("approval", t("승인 필요"), approval.title, request.group.local, approval.id);
+            if (current != null) current.approval(approval);
+            for (Ui observer : observers) if (observer != current) observer.approval(approval);
+            if (current == null && observers.isEmpty()) approval.decision.complete(false);
+            persist(); publish(); return;
+        }
     }
     private File runtimeAliases() throws Exception {
         File bin = new File(context.getFilesDir(), "runtime-bin");

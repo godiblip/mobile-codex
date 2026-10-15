@@ -26,15 +26,16 @@ APK를 여는 앱에서 **이 출처 허용**을 별도로 요구할 수 있습�
 
 Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라이언트입니다. Codex 실행 엔진과 Python·Node.js·Git을 APK에 포함해, Termux 설치나 별도 PC 서버 없이 기기에서 바로 작업할 수 있습니다.
 
-**0.2.9 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
+**0.2.10 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
 
 [APK 다운로드](https://github.com/nokryong/mobile-codex/releases) · [개발 빌드](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [문제 제보](https://github.com/nokryong/mobile-codex/issues)
 
 > OpenAI 공식 앱이 아닌 개인 프로젝트입니다. 모델 추론에는 인터넷과 Codex를 사용할 수 있는 계정이 필요합니다. Codex 프로세스와 파일·명령 도구는 Android 기기에서 실행합니다.
 
-## 0.2.9 수정
+## 0.2.10 업데이트
 
-- Antigravity 로그인 주소가 잘리던 문제를 수정했습니다. 터미널 구분선 사이의 주소를 빈 줄까지 이어 붙여 사용합니다. [릴리스 노트](docs/releases/0.2.9.md).
+- 초대한 참가자마다 승인 방식을 선택합니다. Claude는 설치된 CLI가 지원할 때 자동 검토를 제공하며, 지원하지 않는 선택지는 숨깁니다.
+- 모두에게 동시에 보내고 응답이 시작되는 순서대로 표시합니다. 같은 프로젝트의 수정 작업은 차례로 실행합니다. [릴리스 노트](docs/releases/0.2.10.md).
 
 ## 0.2.8 주요 업데이트
 
@@ -52,7 +53,7 @@ Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라�
 | 기능 | 할 수 있는 일 |
 | --- | --- |
 | 프로젝트와 대화 | 프로젝트별 목록, 기본 Codex 폴더를 사용하는 일반 대화, 저장된 기록 열기, 응답 스트리밍·중지·재개, 작업 중 추가 지시 |
-| 에이전트 초대 | 기존 Codex 대화에 Claude·Gemini(Antigravity) 초대, 참가자 멘션·순차 답변·개별 설정 |
+| 에이전트 초대 | 기존 Codex 대화에 Claude·Gemini(Antigravity) 초대, 참가자 멘션·동시 답변·개별 설정 |
 | Fast | 지원하는 Codex 모델에서 번개 버튼으로 Fast 선택 |
 | 프로젝트 정보 옮기기 | JSON 파일로 프로젝트 ID·이름·병합 이력을 내보내고 가져온 뒤 기기별 작업 폴더 연결 |
 | 파일 작업 | 폴더 탐색·검색, 파일 읽기·생성·수정·이동·이름 변경·삭제, 변경 전 확인과 복구 사본 |
@@ -74,7 +75,7 @@ Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라�
 
 ### APK 받기
 
-[0.2.9 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.9)에서 **`mobile-codex-0.2.9-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
+[0.2.10 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.10)에서 **`mobile-codex-0.2.10-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
 
 | Actions 산출물 | 용도 |
 | --- | --- |
@@ -116,9 +117,9 @@ Actions 산출물 다운로드에는 GitHub 로그인이 필요하며, 보관 �
 
 ### Claude·Gemini 초대
 
-모든 대화는 Codex와 시작합니다. 입력창의 **+ → 에이전트 초대**에서 Claude, Gemini(Antigravity)를 1~2명 골라 지금 대화에 초대합니다. 초대된 에이전트는 지금까지의 대화를 읽습니다. 멘션이 없으면 Codex가 먼저 답하고 초대된 에이전트가 차례로 이어서 답합니다. `@codex`, `@claude`, `@gemini`, `@all`로 특정 참가자만 부를 수 있습니다. 새 메시지를 보내거나 중지를 누르면 진행 중인 순서가 끝납니다.
+모든 대화는 Codex와 시작합니다. 입력창의 **+ → 에이전트 초대**에서 Claude, Gemini(Antigravity)를 1~2명 골라 지금 대화에 초대합니다. 초대된 에이전트는 지금까지의 대화를 읽습니다. 멘션이 없으면 모두 동시에 답하고, 첫 출력이 도착한 순서대로 표시됩니다. `@codex`, `@claude`, `@gemini`, `@all`로 특정 참가자만 부를 수 있습니다. 중지는 모든 답변과 대기 호출을 취소합니다. Codex가 답하는 중 추가 지시를 보내면 다른 참가자는 중지됩니다.
 
-상단의 **참가자** 버튼은 오른쪽 사이드바를 엽니다. 이름을 누르면 모델과 추론을 고를 수 있으며, Codex는 하단 모델 선택과 같은 설정을 씁니다. 초대한 에이전트마다 권한(대화만·프로젝트 읽기·승인 후 수정)을 정하고 대화에서 내보낼 수 있습니다.
+상단의 **참가자** 버튼은 오른쪽 사이드바를 엽니다. 이름을 누르면 모델과 추론을 고를 수 있으며, Codex는 하단과 같은 설정을 씁니다. 참가자마다 프로젝트 권한과 승인 방식(승인 받기·모두 허용)을 정합니다. Claude는 지원되는 경우 자체 자동 검토도 선택할 수 있습니다. 프로젝트 수정은 한 참가자씩 진행합니다.
 
 Claude·Antigravity는 앱 내부 Linux 환경을 활성화한 뒤 **설정 → 계정**에서 CLI를 설치하고 로그인합니다. 외부 Termux 앱은 필요하지 않습니다. 모델 목록은 연결된 공급자에서 확인하며, 설치·로그인 실패 시 다른 모델로 대체하지 않습니다. 자세한 동작과 실기기 확인 항목은 [에이전트 초대 안내](docs/invited-agents.md)를 참고하세요.
 

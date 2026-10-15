@@ -78,8 +78,8 @@ class CliProvider {
         lines(child.stdout,e=>{if(e.kind==='probe')result=e;},reject);child.stderr.resume();
         child.once('error',reject);child.once('close',code=>{clearTimeout(timer);result?resolve(result):reject(new Error('CLI 확인에 실패했습니다 ('+code+'). Linux 도구를 설치·활성화해 주세요.'));});child.stdin.end();
       });
-      this.cap={...this.cap,...data,id:this.id};delete this.cap.kind;
-    }catch(e){this.cap={...this.cap,state:'unavailable',reason:e.message,auth:'unknown',models:[]};}
+      this.cap={...this.cap,...data,id:this.id,nativeAutoReview:data.nativeAutoReview===true,autoReviewUnavailableModels:[]};delete this.cap.kind;
+    }catch(e){this.cap={...this.cap,state:'unavailable',reason:e.message,auth:'unknown',models:[],nativeAutoReview:false};}
     finally{clearTimeout(timer);await terminate(child);if(this.probeChild===child)this.probeChild=null;}
     this.emit('agents.providers',{providers:[this.cap]});return this.cap;
   }
@@ -88,6 +88,10 @@ class CliProvider {
     if(this.cap.state!=='ready')await this.check();
     if(this.cap.state!=='ready')throw new Error(this.cap.reason||'공급자 설치와 로그인을 확인해 주세요.');
     choice(member,this.cap);
+    const approval=member.approvalMode||'ask';
+    if(!['ask','allow-all','auto-review'].includes(approval))throw new Error('지원하지 않는 승인 방식입니다.');
+    if(approval==='auto-review'&&(this.id!=='claude'||!this.cap.nativeAutoReview||this.cap.autoReviewUnavailableModels?.includes(member.model)))
+      throw new Error('이 CLI 또는 모델에서 자동 검토를 사용할 수 없습니다. 참가자 승인 방식을 다시 선택해 주세요.');
   }
   async setupStart(action) {
     if(!['install','login'].includes(action))throw new Error('지원하지 않는 준비 작업입니다.');
@@ -115,25 +119,39 @@ class CliProvider {
   async setupStop() {const child=this.setup;this.setup=null;await terminate(child);return {ok:true};}
   async run(input) {
     const {room,member,signal}=input, key=room.id+'-'+member.id;
-    const signature=JSON.stringify([room.mode,member.model,member.effort,member.session.id]);
+    const signatureFor=id=>JSON.stringify([room.mode,room.projectKey,member.model,member.effort,member.approvalMode||'ask',id]);
+    const signature=signatureFor(member.session.id);
     let s=this.sessions.get(key);
+    // Stop and immediate resend can arrive before the previous process exits.
+    // Never replace its turn callbacks or write the new prompt into a dying CLI.
+    if(s?.ending || s?.turn?.signal.aborted){await this.end(s);s=null;}
+    if(s?.turn)throw new Error('이 참가자가 이미 답하고 있습니다. 먼저 중지해 주세요.');
     if(s){clearTimeout(s.idleTimer);s.idleTimer=null;}
     if(s && (s.signature!==signature||s.child.exitCode!==null||s.child.signalCode)){await this.end(s);s=null;}
     if(!s) {
       // Keep hot sessions without accumulating a CLI process for every room.
       if(this.sessions.size>=2){const idle=[...this.sessions.values()].find(value=>!value.turn);if(idle)await this.end(idle);}
-      s={key,signature,turn:null,token:randomBytes(32).toString('hex'),server:null,child:null};
+      s={key,signature,turn:null,nativeAutoReview:false,token:randomBytes(32).toString('hex'),server:null,child:null};
       s.server=http.createServer((req,res)=>this.mcp(s,req,res));
       await new Promise((resolve,reject)=>{s.server.once('error',reject);s.server.listen(0,'127.0.0.1',resolve);});
-      try{s.child=await this.launch('run',{sessionId:member.session.id,model:member.model,effort:member.effort,mode:room.mode,
+      try{s.child=await this.launch('run',{sessionId:member.session.id,model:member.model,effort:member.effort,mode:room.mode,approvalMode:member.approvalMode||'ask',
         mcp:{port:s.server.address().port,token:s.token}},key);}catch(e){s.server.close();throw e;}
       this.sessions.set(key,s);
       lines(s.child.stdout,e=>{
         const turn=s.turn;if(!turn)return;
+        if(this.id==='claude'&&e.type==='system'&&e.subtype==='init') {
+          s.nativeAutoReview=e.permissionMode==='auto';
+          if(turn.member.approvalMode==='auto-review'&&!s.nativeAutoReview) {
+            this.cap.autoReviewUnavailableModels=[...new Set([...(this.cap.autoReviewUnavailableModels||[]),turn.member.model])];
+            this.emit('agents.providers',{providers:[this.cap]});
+            turn.reject(new Error('Claude가 자동 검토 모드를 활성화하지 못했습니다. CLI·모델·계정 설정을 확인하거나 승인 방식을 다시 선택해 주세요.'));
+            this.end(s);return;
+          }
+        }
         if(e.kind==='runtime-error'){turn.reject(new Error(e.message));return;}
         for(const n of normalize(this.id,e)) {
           if(n.kind==='session'){s.sessionId=n.id;turn.event(n);}
-          else if(n.kind==='final'){s.signature=JSON.stringify([room.mode,member.model,member.effort,n.sessionId||s.sessionId]);turn.resolve({text:n.text,sessionId:n.sessionId||s.sessionId});}
+          else if(n.kind==='final'){s.signature=signatureFor(n.sessionId||s.sessionId);turn.resolve({text:n.text,sessionId:n.sessionId||s.sessionId});}
           else if(n.kind==='error')turn.reject(new Error(n.message));else turn.event(n);
         }
       },error=>{s.turn?.reject(error);terminate(s.child);});
@@ -163,22 +181,29 @@ class CliProvider {
         const p=JSON.parse(body),turn=s.turn;
         if(!turn||turn.signal.aborted)throw new Error('발언이 종료되었습니다.');
         const {room,member}=turn;let result;
-        if(p.action==='list')result=await this.host('tools',{roomId:room.id,mode:room.mode});
+        if(p.action==='list')result=await this.host('tools',{roomId:room.id,runId:room.runId,mode:room.mode});
         else {
           if(room.mode==='chat')throw new Error('대화 전용 방에서는 도구를 사용할 수 없습니다.');
           const read=['mobile_read','mobile_list','mobile_search','mobile_phone_status','mobile_phone_apps','mobile_phone_screen'];
           const mutating=!read.includes(p.name);
           if(mutating && room.mode!=='write')throw new Error('읽기 전용 방에서는 수정·실행할 수 없습니다.');
+          if(mutating && member.approvalMode==='auto-review' && (this.id!=='claude'||!s.nativeAutoReview))
+            throw new Error('공급자의 자동 검토가 활성화되지 않았습니다.');
           if(mutating && !await turn.approve(p.name,JSON.stringify(p.arguments,null,2)))throw new Error('사용자가 작업을 거절했습니다.');
           if(turn.signal.aborted||s.turn!==turn)throw new Error('작업이 중지되었습니다.');
           turn.event({kind:'status',status:'working'});
-          result=await this.host('tool',{roomId:room.id,projectKey:room.projectKey,mode:room.mode,name:p.name,arguments:p.arguments||{}});
+          result=await this.host('tool',{roomId:room.id,runId:room.runId,projectKey:room.projectKey,mode:room.mode,name:p.name,arguments:p.arguments||{}});
         }
         res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(result));
       }catch(error){res.writeHead(403,{'Content-Type':'application/json'});res.end(JSON.stringify({error:error.message}));}
     });
   }
-  async end(s) {clearTimeout(s.idleTimer);await terminate(s.child);s.server?.close();if(this.sessions.get(s.key)===s)this.sessions.delete(s.key);}
+  end(s) {
+    if(s.ending)return s.ending;
+    clearTimeout(s.idleTimer);
+    s.ending=(async()=>{await terminate(s.child);s.server?.close();if(this.sessions.get(s.key)===s)this.sessions.delete(s.key);})();
+    return s.ending;
+  }
   async close(){await Promise.all([...this.sessions.values()].map(s=>this.end(s)));}
   async dispose(){this.disposed=true;await Promise.all([this.close(),this.setupStop(),terminate(this.probeChild)]);}
 }

@@ -9,7 +9,7 @@ const out=path.join(__dirname,'../artifacts/agents-browser');fs.mkdirSync(out,{r
 // Runs in the page: merges fixture agents into every Engine state and answers agent actions.
 function installFixture(){
   const fx=window.__agentFx={agents:[],agentRun:null,extra:[],base:null,calls:[],
-    providers:[{id:'claude',state:'ready',version:'2.1.0',models:[{id:'claude-opus',label:'Opus',isDefault:true,efforts:['medium','high'],defaultEffort:'high'},{id:'claude-sonnet',label:'Sonnet',efforts:['low','medium']}]},
+    providers:[{id:'claude',state:'ready',version:'2.1.0',nativeAutoReview:true,models:[{id:'claude-opus',label:'Opus',isDefault:true,efforts:['medium','high'],defaultEffort:'high'},{id:'claude-sonnet',label:'Sonnet',efforts:['low','medium']}]},
       {id:'agy',state:'login_required',reason:'로그인이 필요합니다.',models:[]}]};
   const emit=window.mobileCodexEvent;
   const merge=s=>({...s,agents:fx.agents,agentProviders:fx.providers,agentRun:fx.agentRun,busy:!!s.busy||!!fx.agentRun,messages:[...(s.messages||[]),...fx.extra]});
@@ -34,16 +34,17 @@ function installFixture(){
       fx.agents=fx.agents.filter(a=>a.enabled!==false);publish();return reply(merge(fx.base));
     }
     if(m.action==='chat.stop'){fx.agentRun=null;publish();return reply({ok:true});}
-    // chat.send: Codex answers, then each invited agent streams its turn.
+    // All start together. Claude's first output arrives before Codex's.
     const id='u'+fx.calls.length;
-    fx.extra.push({id,role:'user',text:p.text,createdAt:Date.now()},{id:id+'-codex',role:'assistant',text:'Codex: 좋은 질문입니다.'});
-    const queue=fx.agents.map(a=>a.id);fx.agentRun={current:queue[0]||'',queue:queue.slice(1)};publish();reply({ok:true});
+    fx.extra.push({id,role:'user',text:p.text,createdAt:Date.now()});
+    fx.agentRun={active:['codex',...fx.agents.map(a=>a.id)],states:{},queue:[]};publish();reply({ok:true});
+    setTimeout(()=>{fx.extra.push({id:id+'-codex',role:'assistant',text:'Codex: 좋은 질문입니다.'});publish();},130);
     let delay=40;
     for(const agent of fx.agents){
       const msg={id:id+'-'+agent.id,role:'assistant',agent:agent.id,agentName:agent.name,text:'',status:'streaming'};
-      setTimeout(()=>{fx.extra.push(msg);fx.agentRun={current:agent.id,queue:fx.agentRun?.queue.filter(q=>q!==agent.id)||[]};publish();},delay);
+      setTimeout(()=>{fx.extra.push(msg);publish();},delay);
       setTimeout(()=>emit('message.delta',{threadId:fx.base.threadId,id:msg.id,delta:agent.name+' 의견: '}),delay+30);
-      setTimeout(()=>{Object.assign(msg,{text:agent.name+' 의견: 앞선 Codex 답을 보완합니다.',status:'complete'});publish();},delay+60);
+      setTimeout(()=>{Object.assign(msg,{text:agent.name+' 의견: 같은 질문에 답합니다.',status:'complete'});publish();},delay+60);
       delay+=100;
     }
     setTimeout(()=>{fx.agentRun=null;publish();},delay+20);
@@ -94,6 +95,10 @@ async function main(){
     await page.getByLabel('Claude 모델').selectOption('claude-sonnet');
     await page.waitForFunction(()=>window.__agentFx.calls.some(c=>c.action==='chat.agents.set'&&c.args.agents[0].model==='claude-sonnet'));
     assert.deepEqual((await calls('chat.agents.set')).at(-1),{agents:[{id:'claude',model:'claude-sonnet',effort:'medium'}]});
+    await page.locator('#agents-panel').getByLabel('Claude 권한').selectOption('write');
+    await page.getByLabel('Claude 승인 방식').selectOption('auto-review');
+    await page.waitForFunction(()=>window.__agentFx.calls.some(c=>c.action==='chat.agents.set'&&c.args.agents[0].approvalMode==='auto-review'));
+    assert.deepEqual(await page.getByLabel('Claude 승인 방식').locator('option').evaluateAll(items=>items.map(i=>i.value)),['ask','auto-review','allow-all']);
     // Each agent can use a character pack, like Codex; its icon replaces the letter avatar.
     await page.getByLabel('Claude 캐릭터').selectOption('builtin');
     await page.waitForFunction(()=>window.__agentFx.calls.some(c=>c.action==='chat.agents.set'&&c.args.agents[0].character==='builtin'));
@@ -110,12 +115,14 @@ async function main(){
     await page.locator('.autocomplete-item',{hasText:'@claude'}).click();
     assert.equal(await page.locator('#prompt').inputValue(),'@claude ');
 
-    // Send: Codex answers first, then Claude streams in the same feed with its name.
+    // The first stream determines feed order, regardless of which provider finishes first.
     await page.locator('#prompt').fill('개선점을 알려 주세요.');await page.locator('#send').click();
-    await page.waitForFunction(()=>[...document.querySelectorAll('.message.agent-message')].some(e=>e.textContent.includes('앞선 Codex 답을 보완합니다.')));
+    await page.waitForFunction(()=>[...document.querySelectorAll('.message.agent-message')].some(e=>e.textContent.includes('같은 질문에 답합니다.')));
     await page.waitForFunction(()=>!window.__agentFx.agentRun);
     assert.ok(await page.locator('.message .agent-speaker',{hasText:'Codex'}).count()>=1);
     assert.equal(await page.locator('.message.agent-message .agent-speaker',{hasText:'Claude'}).count(),1);
+    const speakers=await page.locator('.message .agent-speaker').allTextContents();
+    assert.ok(speakers.findIndex(s=>s.includes('Claude'))<speakers.findLastIndex(s=>s.includes('Codex')));
     assert.equal(await overflow(),false);
     await page.screenshot({path:path.join(out,`chat-${width}.png`)});
 

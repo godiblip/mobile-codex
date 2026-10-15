@@ -85,7 +85,7 @@ final class AgentGroup {
         }
         return new ArrayList<>(found);
     }
-    /** Without a mention everyone answers. Codex, the host, always goes first. */
+    /** Without a mention everyone answers; this orders dispatch, not the responses. */
     static List<String> targets(String text, JSONObject session) {
         List<String> participants = participants(session), called = mentions(text, participants);
         List<String> ids = called.isEmpty() ? participants : called;
@@ -139,7 +139,12 @@ final class AgentGroup {
     /** Context placed before the user's own input when Codex takes its turn. */
     static String codexContext(JSONObject session, JSONArray messages, int upTo, Set<String> skip) {
         int from = indexOf(messages, session.optString("codexCursorId")) + 1;
-        String body = transcript(messages, from, upTo, skip, MAX_CONTEXT);
+        Set<String> known = new HashSet<>(skip);
+        if (!session.optString("codexCursorId").isBlank()) for (int i = from; i < upTo; i++) {
+            JSONObject m = messages.optJSONObject(i);
+            if (m != null && "assistant".equals(m.optString("role")) && m.optString("agent").isBlank()) known.add(m.optString("id"));
+        }
+        String body = transcript(messages, from, upTo, known, MAX_CONTEXT);
         StringBuilder out = new StringBuilder("[그룹 대화] 이 대화에는 사용자와 Codex 외에 ").append(roster(session, CODEX))
             .append("도 참여합니다. 다른 참가자의 의견이 꼭 필요할 때만 독립된 @ID로 호출하세요.");
         if (!body.isBlank()) out.append("\n\nCodex의 마지막 답변 이후 오간 메시지:\n").append(body);
@@ -152,13 +157,18 @@ final class AgentGroup {
         String mode = member.optString("mode", "chat");
         String access = switch (mode) {
             case "read" -> "작업 폴더는 mobile_* 도구로 읽기·검색만 할 수 있습니다. 수정은 Codex에게 맡기세요.";
-            case "write" -> "작업 폴더는 mobile_* 도구로 다룰 수 있고, 수정·명령마다 사용자 승인이 필요합니다.";
+            case "write" -> "작업 폴더는 mobile_* 도구로 다룰 수 있습니다. 수정·명령은 앱의 승인 설정과 작업 차례를 따릅니다.";
             default -> "파일이나 휴대폰 도구는 사용할 수 없습니다. 대화로만 답하세요.";
         };
         String header = "당신은 Mobile Codex 그룹 대화의 @" + id + " (" + name(id) + ")입니다. 다른 참가자: " + roster(session, id) + ".\n"
-            + access + " 앞선 답변을 읽고 겹치지 않게 이어서 답하세요. 다른 참가자 의견이 꼭 필요할 때만 독립된 @ID로 호출하세요. "
+            + access + " 공유된 대화 기록을 읽고 답하세요. 같은 질문에 다른 참가자도 동시에 답할 수 있습니다. 다른 참가자 의견이 꼭 필요할 때만 독립된 @ID로 호출하세요. "
             + "@file:경로, @app:이름은 참가자 호출이 아닙니다. 도구 결과 없이 작업 성공을 주장하지 마세요.\n";
-        String body = transcript(messages, from, messages.length(), Set.of(), MAX_CONTEXT - header.length());
+        Set<String> known = new HashSet<>();
+        if (!member.optString("nativeSession").isBlank()) for (int i = from; i < messages.length(); i++) {
+            JSONObject m = messages.optJSONObject(i);
+            if (m != null && id.equals(m.optString("agent"))) known.add(m.optString("id"));
+        }
+        String body = transcript(messages, from, messages.length(), known, MAX_CONTEXT - header.length());
         return header + "\n새 대화 기록:\n" + body + "\n\n이제 답하세요.";
     }
     /** The agent ids an AI reply asks to hear from next. */
@@ -172,6 +182,6 @@ final class AgentGroup {
         if (value == null) throw new IllegalArgumentException("Unknown agent");
         if (!MODES.contains(mode)) throw new IllegalArgumentException("Invalid agent permission");
         return obj("id", value[0], "provider", value[1], "name", value[2], "model", model, "effort", effort, "mode", mode,
-            "character", "", "enabled", true, "nativeSession", "", "cursorId", "");
+            "approvalMode", "ask", "character", "", "enabled", true, "nativeSession", "", "cursorId", "");
     }
 }
