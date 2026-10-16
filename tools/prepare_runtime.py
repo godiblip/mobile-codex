@@ -38,8 +38,10 @@ def patch_host_name(binary, expected_occurrences=2):
     return binary.replace(old, new)
 
 
-def prepare(archive):
-    lock = json.loads((ROOT / 'tools/runtime-lock.json').read_text())
+def prepare(archive, lock_path=None):
+    lock = json.loads((lock_path or ROOT / 'tools/runtime-lock.json').read_text())
+    if lock.get('testOnly') and archive is None:
+        raise ValueError('Private test runtimes require an explicit verified local archive')
     if archive is None:
         archive = ROOT / '.runtime-cache' / f"codex-{lock['version']}.tgz"
         archive.parent.mkdir(parents=True, exist_ok=True)
@@ -89,4 +91,6 @@ def prepare(archive):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--archive', type=Path)
-    prepare(parser.parse_args().archive)
+    parser.add_argument('--lock', type=Path, help='Explicit checksum lock for a private test archive')
+    args = parser.parse_args()
+    prepare(args.archive, args.lock)

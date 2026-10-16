@@ -38,7 +38,8 @@ test('expanded composer keeps 44px targets at every supported text zoom', () => 
         assert.equal(style.height, '44px', `${id} height at ${width}px / ${zoom}%`);
         assert.equal(style.minHeight, '44px', `${id} target at ${width}px / ${zoom}%`);
       }
-      assert.equal(getComputedStyle(document.getElementById('approval-mode')).height, '44px');
+      assert.equal(document.getElementById('approval-mode').closest('#composer'), null);
+      assert.ok(document.getElementById('approval-mode').closest('#options-dialog'));
       assert.equal(getComputedStyle(document.getElementById('composer-options')).minHeight, '44px');
     }
     const fast = document.getElementById('fast-mode');
@@ -48,7 +49,7 @@ test('expanded composer keeps 44px targets at every supported text zoom', () => 
   }
 });
 
-test('composer visible surfaces use a 32px token while icons remain compact', () => {
+test('composer model control stays plain while action icons remain compact', () => {
   const dom = setup(393);
   const {document, getComputedStyle} = dom.window;
   const rules = rulesOf(document.styleSheets[0]);
@@ -57,8 +58,9 @@ test('composer visible surfaces use a 32px token while icons remain compact', ()
   assert.equal(getComputedStyle(document.getElementById('fast-mode').querySelector('svg')).width, '17px');
   assert.equal(getComputedStyle(document.getElementById('voice-input').querySelector('svg')).height, '17px');
   assert.equal(getComputedStyle(document.getElementById('send').querySelector('svg')).width, '17px');
-  assert.equal(rule('.approval-mode-picker::before').style.inset, '6px 0');
-  assert.equal(rule('.composer-bottom .options-button::before').style.inset, '6px 0');
+  assert.equal(rule('.approval-mode-picker::before'), undefined);
+  assert.equal(rule('.composer-bottom .options-button::before'), undefined);
+  assert.equal(rule('.composer-bottom .options-button').style.background, 'transparent');
   assert.equal(rule('.send-button::before').style.inset, 'calc((44px - var(--composer-visible-control-size)) / 2)');
   assert.equal(rule('.composer-actions .fast-mode-button::before').style.width, 'var(--composer-visible-control-size)');
   assert.equal(rule('.composer-actions .fast-mode-button[aria-pressed=true]').style.background, 'transparent');

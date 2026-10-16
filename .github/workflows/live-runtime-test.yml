@@ -1,0 +1,83 @@
+name: Private Live runtime build
+on:
+  push:
+    branches: [codex/live-voice-test]
+    paths:
+      - '.github/workflows/live-runtime-test.yml'
+      - 'tools/runtime-patches/**'
+      - 'tools/package_live_runtime.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: live-runtime-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  runtime:
+    if: github.repository == 'SeeUSoon93/mobile-codex' && github.event.repository.private == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: '3'
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '4'
+      CARGO_PROFILE_RELEASE_PANIC: abort
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: DioNanos/codex-termux
+          ref: c382cb99717bbaedd0e79c61835ddfc966423424
+          path: engine
+          persist-credentials: false
+      - name: Apply verified voice source patch
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          root = pathlib.Path('tools/runtime-patches')
+          manifest = json.loads((root / 'live-voices-v3.json').read_text())
+          patch = root / manifest['patch']
+          assert hashlib.sha256(patch.read_bytes()).hexdigest() == manifest['sha256']
+          assert subprocess.check_output(['git','-C','engine','rev-parse','HEAD'], text=True).strip() == manifest['baseCommit']
+          subprocess.run(['git','-C','engine','apply','--check',str(patch.resolve())], check=True)
+          subprocess.run(['git','-C','engine','apply',str(patch.resolve())], check=True)
+          PY
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev protobuf-compiler
+          rustup toolchain install 1.95.0 --profile minimal --target aarch64-linux-android
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358'
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - name: Build Android ARM64 engine and code-mode host
+        working-directory: engine
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          export LIBLZMA_NO_PKG_CONFIG=1 PKG_CONFIG_ALLOW_CROSS=1 OPENSSL_NO_PKG_CONFIG=1
+          export CODEX_SKIP_VENDORED_BWRAP=1
+          export CC_aarch64_linux_android=aarch64-linux-android29-clang
+          export CXX_aarch64_linux_android=aarch64-linux-android29-clang++
+          export AR_aarch64_linux_android=llvm-ar RANLIB_aarch64_linux_android=llvm-ranlib
+          python3 scripts/fetch_rusty_v8_android.py > /tmp/live-v8-exports
+          source <(grep '^export ' /tmp/live-v8-exports)
+          python3 scripts/check_v8_sandbox.py "$RUSTY_V8_ARCHIVE"
+          builtins="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64" -name libclang_rt.builtins-aarch64-android.a -print -quit)"
+          test -n "$builtins"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-Clink-arg=-lc++_shared -Clink-arg=-Wl,-rpath,\$ORIGIN -Clink-arg=$builtins"
+          cd codex-rs
+          rustup run 1.95.0 cargo build --locked --target aarch64-linux-android --release -p codex-cli -p codex-code-mode-host
+      - name: Package checksum-pinned test runtime
+        run: python3 tools/package_live_runtime.py --source engine --ndk "$ANDROID_NDK_HOME" --output artifacts/live-runtime --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: live-runtime-arm64
+          path: artifacts/live-runtime/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0

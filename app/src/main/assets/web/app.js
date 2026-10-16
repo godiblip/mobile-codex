@@ -6,6 +6,7 @@
   const $ = id => document.getElementById(id), C = window.UiCore;
   const pending = new Map(), requestQueue = new Map();
   let agentUi = null;
+  let liveUi = null;
   let terminalState = {id:'', revision:-1, running:false, stopping:false}, terminalSending = false;
   const dialogs = [], frame = fn => (window.requestAnimationFrame || (cb => setTimeout(cb, 0)))(fn);
   let following = true, draftScope = '', draftConsultAccount = '', sending = null, configOriginal = '', sidebarFocus = null, openedImage = null;
@@ -332,7 +333,8 @@
     control.title = title; control.setAttribute('aria-label', title);
   }
   function updateSend() {
-    $('voice-input').disabled = !draftScope || voiceStarting || voiceActive || !!sending;
+    $('voice-input').disabled = !draftScope || voiceStarting || voiceActive || !!sending || !!liveUi?.active();
+    liveUi?.update();
     $('voice-input').setAttribute('aria-busy', String(voiceStarting || voiceActive));
     $('send').disabled = ((!$('prompt').value.trim() && !(draftContext.attachments || []).length) || !!sending || voiceStarting || voiceActive || (state.workspace?.selected && state.workspace.available === false));
     const steering = state.busy && !!state.turnId;
@@ -354,7 +356,7 @@
   function updateComposerExpansion() {
     const composer = $('composer');
     // Keep task controls reachable while reading messages outside the input.
-    composer.classList.toggle('composer-expanded', !!state.busy || !!state.proBusy || !$('dictation').hidden || !$('draft-context').hidden || composer.contains(document.activeElement));
+    composer.classList.toggle('composer-expanded', !!state.busy || !!state.proBusy || !$('dictation').hidden || !$('draft-context').hidden || $('model-picker').open || composer.contains(document.activeElement));
     sizeComposer();
   }
   function sizeComposer() {
@@ -370,6 +372,7 @@
     const visual = window.visualViewport, height = visual && visual.scale === 1 ? Math.min(window.innerHeight, visual.height) : window.innerHeight;
     document.documentElement.style.setProperty('--app-height', height + 'px');
     sizeComposer();
+    positionModelPicker();
     if (following) frame(() => { if (following) scrollLatest(); });
     if (!matchMedia('(max-width:760px)').matches) {
       document.body.classList.remove('sidebar-open'); $('scrim').hidden = true;
@@ -382,6 +385,7 @@
     const effort = $('effort').selectedOptions[0]?.textContent || t('추론 설정 정보 없음');
     const approval = $('approval-mode').selectedOptions[0]?.textContent || t('자동 검토');
     $('model-summary').textContent = model;
+    $('effort-summary').textContent = $('effort').value ? effort : '';
     $('composer-options').setAttribute('aria-label', t('작업 설정: ') + model + t(', 추론 ') + effort + t(', 승인 ') + approval);
     $('composer-options').title = model + ' · ' + effort;
     $('approval-mode').title = t('Codex 승인 방식') + ': ' + approval;
@@ -389,6 +393,61 @@
     $('permission-help').textContent = state.busy ? t('작업이 끝나면 권한을 변경할 수 있습니다.') : ({'read-only':t('파일을 읽고 검토합니다.'), 'workspace-write':t('선택한 프로젝트의 파일을 수정할 수 있습니다.'), 'danger-full-access':t('앱에 허용된 기기 파일과 명령에 접근할 수 있습니다.')}[$('permissions').value] || '');
     const current = state.models.find(m => (m.model || m.id) === $('model').value) || state.models.find(m => m.isDefault);
     $('model-help').textContent = current?.description || (current ? t('연결된 계정에서 사용할 수 있는 모델입니다.') : t('모델 목록을 새로고침해 주세요.'));
+    syncReasoningPicker();
+  }
+  function positionModelPicker() {
+    const picker = $('model-picker'); if (!picker.open) return;
+    const anchor = $('composer-options').getBoundingClientRect(), viewport = window.visualViewport;
+    const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+    const width = viewport?.width || innerWidth, height = viewport?.height || innerHeight;
+    const availableAbove = anchor.top - top - 20, availableBelow = top + height - anchor.bottom - 20;
+    const below = availableAbove < 220 && availableBelow > availableAbove;
+    picker.style.left = Math.max(left + 12, Math.min(anchor.left, left + width - picker.offsetWidth - 12)) + 'px';
+    picker.style.top = below ? anchor.bottom + 8 + 'px' : 'auto';
+    picker.style.bottom = below ? 'auto' : innerHeight - anchor.top + 8 + 'px';
+    picker.style.maxHeight = Math.max(100, below ? availableBelow : availableAbove) + 'px';
+  }
+  function sizeModelPicker() {
+    if (!$('model-picker').open) return;
+    const panel = $('model-picker').classList.contains('show-models') ? $('model-panel') : $('reasoning-panel');
+    $('model-picker-panels').style.height = panel.scrollHeight + 'px';
+    positionModelPicker();
+  }
+  function showModelPanel(models, focus = true) {
+    $('model-picker').classList.toggle('show-models', models);
+    $('reasoning-panel').inert = models; $('model-panel').inert = !models;
+    $('reasoning-panel').setAttribute('aria-hidden', String(models)); $('model-panel').setAttribute('aria-hidden', String(!models));
+    $('model-picker-model').setAttribute('aria-expanded', String(models));
+    $('model-picker-title').textContent = t(models ? '모델' : '추론 강도');
+    sizeModelPicker();
+    if (focus) (models ? $('model-list').querySelector('input:checked, input') || $('model-picker-back') : $('model-picker-model')).focus({preventScroll:true});
+  }
+  function previewReasoning() {
+    const options = [...$('effort').options].filter(option => option.value), slider = $('effort-slider');
+    const option = options[Number(slider.value)];
+    if (option) $('effort-heading').textContent = option.textContent;
+    slider.setAttribute('aria-valuetext', option?.textContent || t('추론 강도 조절 미지원'));
+    slider.style.setProperty('--effort-fill', (options.length > 1 ? Number(slider.value) / (options.length - 1) * 100 : 0) + '%');
+  }
+  function syncReasoningPicker() {
+    const options = [...$('effort').options].filter(option => option.value), slider = $('effort-slider');
+    $('model-heading').textContent = $('model').selectedOptions[0]?.textContent || t('모델 목록 조회 필요');
+    $('effort-heading').textContent = $('effort').value ? $('effort').selectedOptions[0].textContent : t('모델');
+    slider.max = String(Math.max(0, options.length - 1));
+    slider.value = String(Math.max(0, options.findIndex(option => option.value === $('effort').value)));
+    slider.disabled = options.length < 2;
+    $('reasoning-control').hidden = !options.length; $('effort-unavailable').hidden = !!options.length;
+    previewReasoning(); sizeModelPicker();
+  }
+  function refreshPickerModels() {
+    const generation = ++modelRefreshGeneration, status = $('model-refresh-status');
+    status.textContent = t('모델 목록 확인 중…'); status.hidden = false;
+    call('models.refresh').then(() => {
+      if (generation === modelRefreshGeneration) status.hidden = true;
+    }).catch(() => {
+      if (generation !== modelRefreshGeneration) return;
+      status.textContent = t('모델 목록을 갱신하지 못했습니다. 이전 목록을 표시합니다.');
+    });
   }
   function syncPermissionControls(mode, disabled = !!state.busy) {
     const value = ['read-only','workspace-write','danger-full-access'].includes(mode) ? mode : 'workspace-write';
@@ -1009,21 +1068,27 @@
     const selected = state.models.find(m => (m.model || m.id) === $('model').value);
     const previous = $('effort').value, values = selected?.supportedReasoningEfforts || [];
     $('effort').replaceChildren(); $('effort').disabled = !values.length;
-    for (const e of values) $('effort').add(new Option(t(({none:'없음',minimal:'최소',low:'낮음',medium:'중간',high:'높음',xhigh:'매우 높음'})[e.reasoningEffort] || e.reasoningEffort), e.reasoningEffort));
+    for (const e of values) $('effort').add(new Option(({none:'None',minimal:'Minimal',low:'Light',medium:'Medium',high:'High',xhigh:'Extra High',max:'Max',ultra:'Ultra'})[e.reasoningEffort] || e.reasoningEffort, e.reasoningEffort));
     if (!values.length) $('effort').add(new Option(t('추론 설정 정보 없음'), ''));
     $('effort').value = values.some(e => e.reasoningEffort === previous) ? previous : (values.some(e => e.reasoningEffort === selected?.defaultReasoningEffort) ? selected.defaultReasoningEffort : values[0]?.reasoningEffort || '');
     optionsSummary();
   }
   function renderModelList() {
-    const target = $('model-list'); target.replaceChildren();
+    const target = $('model-list'), focused = target.contains(document.activeElement) ? document.activeElement.value : null;
+    target.replaceChildren();
     const choices = state.models.filter(m => (m.model || m.id) !== LEGACY_PRO_MODEL).map(m => ({id:m.model || m.id, label:m.displayName || m.model || m.id, description:m.description || m.model || m.id}));
     if ($('model').value && !choices.some(m => m.id === $('model').value)) target.append(node('p', $('model').value + ' · ' + t('목록 확인 필요'), 'muted'));
     if (!choices.length) target.append(node('p',t('모델 목록을 새로고침해 주세요.'),'muted'));
     for (const choice of choices) {
       const label = node('label', null, 'model-choice'); const input = node('input'); input.type = 'radio'; input.name = 'model-choice'; input.value = choice.id; input.checked = $('model').value === choice.id;
-      input.addEventListener('change', () => { $('model').value = choice.id; $('model').dispatchEvent(new Event('change')); renderModelList(); });
-      const text = node('span'); text.append(node('strong', choice.label), node('small', choice.description)); label.append(input, text); target.append(label);
+      input.addEventListener('change', () => { $('model').value = choice.id; $('model').dispatchEvent(new Event('change')); showModelPanel(false); });
+      label.addEventListener('click', e => { if ($('model').value === choice.id) { e.preventDefault(); showModelPanel(false); } });
+      label.title = choice.description;
+      const check = icon('check'); check.setAttribute('aria-hidden', 'true');
+      label.append(input, node('strong', choice.label), check); target.append(label);
     }
+    if (focused) [...target.querySelectorAll('input')].find(input => input.value === focused)?.focus({preventScroll:true});
+    sizeModelPicker();
   }
   function renderDevtools() {
     const info = state.devtools;
@@ -2055,6 +2120,7 @@
     show('request-dialog');
   }
   window.mobileCodexEvent = (name, data) => {
+    if (name.startsWith('live.')) { liveUi?.event(name, data); return; }
     if (name.startsWith('agents.')) { agentUi?.event(name, data); return; }
     if (name === 'response') { const p = pending.get(data.id); if (p) { clearTimeout(p.timer); pending.delete(data.id); data.error ? p.reject(new Error(data.error)) : p.resolve(data.result || {}); } return; }
     if (name === 'state') render(data);
@@ -2219,20 +2285,31 @@
   }, {passive:true});
   $('chat-scroll').addEventListener('wheel', e => { if (e.deltaY < 0 && $('chat-scroll').scrollTop <= 160) { following = false; loadEarlierMessages(); } }, {passive:true});
   on('fast-mode', () => { if ($('fast-mode').disabled) return; draftOptions.fastMode = draftOptions.fastMode !== true; saveOptions(); updateFastButton(); });
+  liveUi = window.MobileCodexLive?.create({call, getState:() => state,
+    getOptions:() => ({model:$('model').value, effort:$('effort').value, fastMode:draftOptions.fastMode === true}),
+    show, close, t, errorText, changed:() => { $('voice-input').disabled = !!liveUi?.active() || voiceStarting || voiceActive; }});
   on('voice-input', startVoiceInput);
   on('dictation-done', () => call('voice.stop'));
   on('dictation-cancel', () => call('voice.cancel'));
   on('jump-latest', scrollLatest); on('composer-options', () => {
-    optionsSummary(); show('options-dialog');
-    const generation = ++modelRefreshGeneration, status = $('model-refresh-status');
-    status.textContent = t('모델 목록 확인 중…'); status.hidden = false;
-    call('models.refresh').then(() => {
-      if (generation === modelRefreshGeneration) status.hidden = true;
-    }).catch(() => {
-      if (generation !== modelRefreshGeneration) return;
-      status.textContent = t('모델 목록을 갱신하지 못했습니다. 이전 목록을 표시합니다.');
-    });
+    optionsSummary(); showModelPanel(false, false); show('model-picker');
+    $('composer-options').setAttribute('aria-expanded', 'true');
+    updateComposerExpansion(); sizeModelPicker(); $('model-picker-model').focus({preventScroll:true});
+    refreshPickerModels();
   });
+  on('model-picker-model', () => { showModelPanel(true); refreshPickerModels(); });
+  on('model-picker-back', () => showModelPanel(false));
+  on('model-picker-permissions', () => { close('model-picker'); show('options-dialog'); });
+  on('effort-slider', previewReasoning, 'input');
+  on('effort-slider', () => {
+    const option = [...$('effort').options].filter(option => option.value)[Number($('effort-slider').value)];
+    if (option) { $('effort').value = option.value; $('effort').dispatchEvent(new Event('change')); }
+  }, 'change');
+  $('model-picker').addEventListener('close', () => { $('composer-options').setAttribute('aria-expanded', 'false'); updateComposerExpansion(); });
+  if (window.ResizeObserver) {
+    const pickerObserver = new ResizeObserver(sizeModelPicker);
+    ['reasoning-panel', 'model-panel', 'composer'].forEach(id => pickerObserver.observe($(id)));
+  }
   on('image-save', () => openedImage && call('images.export', {id:openedImage.id, name:openedImage.name}));
   on('image-zoom', () => { const zoomed = $('image-stage').classList.toggle('zoomed'); $('image-zoom').setAttribute('aria-pressed', String(zoomed)); });
   on('image-prev', () => changeImage(-1)); on('image-next', () => changeImage(1));

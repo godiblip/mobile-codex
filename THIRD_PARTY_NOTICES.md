@@ -3,9 +3,10 @@
 Mobile Codex is an independent client; it is not an official OpenAI Android application.
 
 The APK bundles a pinned Android port of Codex:
-- Source: https://github.com/DioNanos/codex-termux/tree/v0.162.1-termux.1
+- Source: https://github.com/DioNanos/codex-termux/tree/c382cb99717bbaedd0e79c61835ddfc966423424
 - Upstream: https://github.com/openai/codex
 - Package: `@mmmbuto/codex-cli-termux@0.162.1-termux.1`
+- The bundled build adds the Live voice catalog patch in `tools/runtime-patches/`. The exact patched source and runtime archives are available at https://github.com/nokryong/mobile-codex/releases/tag/runtime-0.162.1-live-v3; checksums and source references are pinned in `tools/runtime-lock.json`.
 - The package's original `LICENSE` and `NOTICE` are copied into `assets/runtime/` at build time.
 - A fixed-width helper executable name change is applied for Android APK native-library packaging. See `tools/prepare_runtime.py` and README.
 - The original archive integrity and the resulting packaged file hashes are recorded separately.

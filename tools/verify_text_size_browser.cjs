@@ -69,10 +69,12 @@ fs.mkdirSync(output,{recursive:true});
     await page.evaluate(value=>document.documentElement.dataset.theme=value,theme);
     const surfaces=await page.evaluate(()=>{
      const pseudo=selector=>{const style=getComputedStyle(document.querySelector(selector),'::before');return {width:parseFloat(style.width),height:parseFloat(style.height)};};
-     return {fast:pseudo('#fast-mode'),send:pseudo('#send'),approval:pseudo('.approval-mode-picker'),model:pseudo('.composer-bottom .options-button'),fastOuter:getComputedStyle(document.getElementById('fast-mode')).backgroundColor};
+     return {fast:pseudo('#fast-mode'),send:pseudo('#send'),model:getComputedStyle(document.getElementById('composer-options')).backgroundColor,fastOuter:getComputedStyle(document.getElementById('fast-mode')).backgroundColor};
     });
     assert.equal(surfaces.fastOuter,'rgba(0, 0, 0, 0)',`${theme} Fast must not paint its full 44px target`);
-    for(const key of ['fast','send','approval','model'])assert.equal(surfaces[key].height,32,`${theme} ${key} visible height at ${width}`);
+    assert.equal(surfaces.model,'rgba(0, 0, 0, 0)',`${theme} model control stays plain`);
+    assert.equal(await page.locator('#composer #approval-mode').count(),0,'Permissions are shown only in the permission sheet');
+    for(const key of ['fast','send'])assert.equal(surfaces[key].height,32,`${theme} ${key} visible height at ${width}`);
     for(const key of ['fast','send'])assert.equal(surfaces[key].width,32,`${theme} ${key} visible width at ${width}`);
     await page.screenshot({path:path.join(output,`composer-${width}-150-${theme}.png`)});
    }

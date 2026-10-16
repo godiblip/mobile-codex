@@ -106,7 +106,8 @@
     if (name === 'main') return;
     if (name === 'welcome') { window.mobileCodexEvent('state', {...state,messages:[]}); return; }
     if (name === 'files') { click('#files-toggle'); await pause(35); return; }
-    if (name === 'options') return click('#composer-options');
+    if (name === 'model-picker') return click('#composer-options');
+    if (name === 'options') { click('#composer-options'); return click('#model-picker-permissions'); }
     if (name === 'tool-menu') return click('#show-tools');
     if (name === 'composer-expanded') {
       const prompt = document.getElementById('prompt'); prompt.value = 'A deliberately long fixture prompt that expands the composer across multiple lines for review.';

@@ -59,7 +59,7 @@ async function checkComposer(page) {
  await page.locator('#prompt').focus();
  await page.waitForFunction(()=>document.getElementById('composer')?.classList.contains('composer-expanded'));
  const result=await page.evaluate(()=>{
-  const ids=['add-attachment','composer-folder','fast-mode','approval-mode','composer-options','voice-input','send'];
+  const ids=['add-attachment','composer-folder','composer-options','fast-mode','voice-input','send'];
   const bounds=id=>{const r=document.getElementById(id).getBoundingClientRect();return {id,x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
   return {width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,controls:ids.map(bounds),composer:bounds('composer'),header:bounds('header-project'),chat:bounds('chat-scroll')};
  });
@@ -77,7 +77,7 @@ async function checkComposer(page) {
  }
  const fast=result.controls.find(control=>control.id==='fast-mode'),options=result.controls.find(control=>control.id==='composer-options');
  assert.equal(fast.y,options.y,'Fast belongs to the lowest composer row');
- assert.ok(fast.x<options.x,'Fast is leftmost in the lowest row');
+ assert.ok(options.x<fast.x,'Fast remains separate beside the combined model picker');
  const dateElement=page.locator('.message-time').first();
  const date=await dateElement.count()?await dateElement.boundingBox():null;
  if(date) {
@@ -431,7 +431,7 @@ async function checkLinuxSettings(page,width,theme,language) {
   await page.locator('#prompt').focus();
   await page.waitForFunction(()=>document.getElementById('composer')?.classList.contains('composer-expanded'));
   await page.locator('#composer-options').click();
-  assert.equal(await page.locator('#options-dialog').evaluate(el=>getComputedStyle(el).animationName),'none');
+  assert.equal(await page.locator('#model-picker').evaluate(el=>getComputedStyle(el).animationName),'none');
   assert.equal(await page.locator('#send').evaluate(el=>getComputedStyle(el).transitionDuration),'0s');
   await page.screenshot({path:path.join(output,'options-reduced-motion.png')});await context.close();
   const sourceGitDiffHash=crypto.createHash('sha256').update(execFileSync('git',['diff','--no-ext-diff'],{cwd:root,encoding:'utf8'})).digest('hex');

@@ -14,7 +14,7 @@ const types = new Map([
   ['.html','text/html; charset=utf-8'], ['.png','image/png'], ['.jpg','image/jpeg'],
   ['.jpeg','image/jpeg'], ['.webp','image/webp'], ['.gif','image/gif'], ['.svg','image/svg+xml']
 ]);
-const csp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+const csp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 const reviewCsp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 const reportPath = path.join(root, 'artifacts/ui-review/report.json');
 

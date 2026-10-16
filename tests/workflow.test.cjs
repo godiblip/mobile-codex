@@ -52,7 +52,7 @@ test('cached packaging outputs are exact-keyed and still verified',()=>{
 test('normal releases do not upload duplicate APK artifacts',()=>{
  const build=job('build');
  const upload=build.slice(build.indexOf('- name: Upload explicitly requested test APK only'),build.indexOf('- name: Publish versioned'));
- assert.match(upload,/if: github.event_name != 'pull_request' && inputs.apk_only/);
+ assert.match(upload,/if: github.event_name != 'pull_request' && \(inputs.apk_only \|\| \(github.event_name == 'workflow_dispatch' && github.ref != 'refs\/heads\/main'\)\)/);
  assert.match(upload,/compression-level: 0/);
  assert.doesNotMatch(workflow,/name: mobile-codex-arm64-debug|name: mobile-codex-update-assets/);
 });

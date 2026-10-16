@@ -26,11 +26,17 @@ APK를 여는 앱에서 **이 출처 허용**을 별도로 요구할 수 있습�
 
 Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라이언트입니다. Codex 실행 엔진과 Python·Node.js·Git을 APK에 포함해, Termux 설치나 별도 PC 서버 없이 기기에서 바로 작업할 수 있습니다.
 
-**0.2.12 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
+**0.2.13 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
 
 [APK 다운로드](https://github.com/nokryong/mobile-codex/releases) · [개발 빌드](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [문제 제보](https://github.com/nokryong/mobile-codex/issues)
 
 > OpenAI 공식 앱이 아닌 개인 프로젝트입니다. 모델 추론에는 인터넷과 Codex를 사용할 수 있는 계정이 필요합니다. Codex 프로세스와 파일·명령 도구는 Android 기기에서 실행합니다.
+
+## 0.2.13 업데이트
+
+- **Codex Live:** 기존 계정으로 Codex와 음성 대화하고, 프로젝트 작업을 말로 지시하고 결과를 음성으로 듣습니다.
+- **음성 설정:** 엔진이 제공하는 음성 25개를 접고 펼치는 목록에서 선택합니다. 확인된 언어별로 묶고 한국어 음성은 한울·햇살로 표시합니다.
+- **모델 선택:** 간결한 모델 선택기, 영어 추론 강도, 한곳에 모은 작업 권한을 제공합니다. [릴리스 노트](docs/releases/0.2.13.md).
 
 ## 0.2.12 수정
 
@@ -59,6 +65,7 @@ Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라�
 | 프로젝트와 대화 | 프로젝트별 목록, 기본 Codex 폴더를 사용하는 일반 대화, 저장된 기록 열기, 응답 스트리밍·중지·재개, 작업 중 추가 지시 |
 | 에이전트 초대 | 기존 Codex 대화에 Claude·Gemini(Antigravity) 초대, 참가자 멘션·동시 답변·개별 설정 |
 | Fast | 지원하는 Codex 모델에서 번개 버튼으로 Fast 선택 |
+| Codex Live | 음성 대화, 프로젝트 작업 음성 지시, 결과 음성 안내, 마이크 음소거와 음성 선택 |
 | 프로젝트 정보 옮기기 | JSON 파일로 프로젝트 ID·이름·병합 이력을 내보내고 가져온 뒤 기기별 작업 폴더 연결 |
 | 파일 작업 | 폴더 탐색·검색, 파일 읽기·생성·수정·이동·이름 변경·삭제, 변경 전 확인과 복구 사본 |
 | 첨부와 이미지 | 여러 파일 첨부, 이미지 미리보기, 여러 장의 생성 결과 갤러리, 확대·스와이프·원본 저장 |
@@ -79,7 +86,7 @@ Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라�
 
 ### APK 받기
 
-[0.2.12 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.12)에서 **`mobile-codex-0.2.12-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
+[0.2.13 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.13)에서 **`mobile-codex-0.2.13-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
 
 | Actions 산출물 | 용도 |
 | --- | --- |
@@ -118,6 +125,12 @@ Actions 산출물 다운로드에는 GitHub 로그인이 필요하며, 보관 �
 0.1.7부터 앱 ID는 `dev.mobilecodex.app`입니다. 다른 앱 ID를 사용한 이전 버전과는 별도 앱으로 설치됩니다. 자세한 내용은 [업데이트와 배포 안내](docs/app-updates.md)를 참고하세요.
 
 ## 기능 사용 안내
+
+### Codex Live
+
+입력창의 Live 버튼을 누르면 Codex와 음성으로 대화합니다. 프로젝트에서 파일 읽기·수정 같은 작업을 말로 지시하고 결과를 음성으로 들을 수 있습니다. 음성 설정에서 목소리와 언어를 선택하고 마이크 음소거·종료 버튼으로 제어합니다.
+
+현재 Live 화면에 글자로 입력한 메시지는 음성 답변까지 지원하며 작업 실행으로 이어지지 않습니다. 작업은 말로 지시하거나 기존 대화 입력창을 사용하세요.
 
 ### Claude·Gemini 초대
 
@@ -227,7 +240,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | [검증 기록](docs/verification.md) | 테스트 결과와 실기기 미확인 항목 |
 | [서드파티 고지](THIRD_PARTY_NOTICES.md) | 포함된 구성 요소의 출처와 라이선스 |
 
-Android 실행 엔진은 [DioNanos/codex-termux](https://github.com/DioNanos/codex-termux/tree/v0.162.1-termux.1)의 `@mmmbuto/codex-cli-termux@0.162.1-termux.1`을 사용하고, UI와 엔진은 [Codex app-server](https://github.com/openai/codex/tree/main/codex-rs/app-server)의 JSON-RPC 프로토콜로 연결합니다. Termux 앱을 설치하는 방식이 아니라 Android 네이티브 실행 파일을 APK에 포함해 직접 실행합니다.
+Android 실행 엔진은 [DioNanos/codex-termux](https://github.com/DioNanos/codex-termux/tree/v0.162.1-termux.1)의 `@mmmbuto/codex-cli-termux@0.162.1-termux.1`에 [Live 음성 패치](tools/runtime-patches/README.md)를 적용한 버전입니다. UI와 엔진은 [Codex app-server](https://github.com/openai/codex/tree/main/codex-rs/app-server)의 JSON-RPC 프로토콜로 연결합니다. Termux 앱을 설치하는 방식이 아니라 Android 네이티브 실행 파일을 APK에 포함해 직접 실행합니다.
 
 엔진·개발 도구의 버전과 체크섬은 [`runtime-lock.json`](tools/runtime-lock.json)과 [`devtools-lock.json`](tools/devtools-lock.json)에 고정합니다. Android 패키징에 필요한 실행 파일 이름과 라이브러리 참조를 조정하며, 준비 스크립트와 변경 사항을 저장소에 포함합니다. 원본 LICENSE·NOTICE는 APK에, 개발 도구의 대응 소스는 빌드 산출물에 포함합니다. 재배포 시에도 해당 고지와 소스를 함께 제공하세요.
 

@@ -54,9 +54,17 @@ class UpdateRuntimeTests(unittest.TestCase):
     def test_real_lock_and_version_text_agree(self):
         import json
         lock = json.loads(update_runtime.LOCK.read_text())
-        self.assertIsNotNone(update_runtime.version_key(lock['version']))
+        upstream = lock.get('upstreamVersion', lock['version'])
+        self.assertIsNotNone(update_runtime.version_key(upstream))
         html = (update_runtime.ROOT / 'app/src/main/assets/web/index.html').read_text(encoding='utf-8')
-        self.assertIn(f"Codex 포트 {lock['version']}", html)
+        self.assertIn(f"Codex 포트 {upstream}", html)
+
+    def test_stock_runtime_cannot_replace_a_patched_build(self):
+        lock = dict(LOCK, patchSha256='verified-source-patch')
+        release = metadata('0.163.0')
+        self.assertIsNone(update_runtime.newer_release(lock, release))
+        with self.assertRaises(ValueError):
+            update_runtime.updated_lock(lock, '0.163.0', release['versions']['0.163.0']['dist'])
 
 
 if __name__ == '__main__':

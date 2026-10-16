@@ -100,16 +100,12 @@
 }
 
 @media (max-width: 420px) {
-  .composer-actions .approval-mode-picker { flex-basis: 108px; }
-  .composer-actions:has(#stop:not([hidden])) .approval-mode-picker { display: none; }
   .composer-bottom .options-button { padding: 0 var(--s-2) 0 var(--s-3); }
 }
 
 @media (max-width: 360px) {
   :root { --gutter: var(--s-3); }
   .composer-wrap { padding-left: var(--s-2); padding-right: var(--s-2); }
-  .composer-actions .approval-mode-picker { flex-basis: 84px; min-width: 72px; }
-  .approval-mode-picker select { padding: 0 var(--s-2); }
 }
 
 /* ---------- Short viewports: keyboard open, landscape phones ---------- */

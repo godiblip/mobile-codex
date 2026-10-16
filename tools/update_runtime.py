@@ -31,6 +31,9 @@ def version_key(version):
 
 
 def newer_release(lock, metadata):
+    # A stock npm archive would discard the device-tested Live voice patch.
+    if lock.get('patchSha256'):
+        return None
     latest = metadata.get('dist-tags', {}).get('latest', '')
     current, candidate = version_key(lock['version']), version_key(latest)
     if candidate is None or current is None or candidate <= current:
@@ -44,6 +47,8 @@ def newer_release(lock, metadata):
 
 
 def updated_lock(lock, version, dist):
+    if lock.get('patchSha256'):
+        raise ValueError('Patched runtime requires an explicit source and device review')
     source = re.sub(r'/tree/v[^/]+$', '/tree/v' + version, lock['source'])
     return dict(lock, version=version, url=dist['tarball'], integrity=dist['integrity'], source=source)
 
@@ -80,6 +85,8 @@ def main():
                 path.write_text(replace_version_text(path.read_text(encoding='utf-8'), lock['version'], version), encoding='utf-8')
         outputs.update(changed='true', version=version)
         print(f"Pinned {lock['package']} {lock['version']} -> {version}")
+    elif lock.get('patchSha256'):
+        print(f"{lock['package']} {lock['version']} is pinned with a source patch; review upstream updates manually")
     else:
         print(f"{lock['package']} {lock['version']} is already the newest release")
     if os.environ.get('GITHUB_OUTPUT'):

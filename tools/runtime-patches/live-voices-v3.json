@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/DioNanos/codex-termux.git",
+  "baseCommit": "c382cb99717bbaedd0e79c61835ddfc966423424",
+  "baseVersion": "0.162.1-termux.1",
+  "patch": "codex-live-voices-v3.patch",
+  "sha256": "1a1e93142e3a97c37ee43c7300cb48a8374543d48f1f8569a6e1190301c6d5ca",
+  "androidBinaryBuilt": true,
+  "deviceVerified": true,
+  "verifiedVoices": ["cove", "hanul", "haetsal"]
+}

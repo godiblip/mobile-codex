@@ -58,7 +58,9 @@ async function inspect(page, name, width) {
   return geometry;
 }
 async function stabilize(page, textSize) {
-  await page.waitForFunction(() => window.__uiReviewReady === true && window.__uiReviewSurfaceReady === true);
+  await page.waitForFunction(() => window.__uiReviewError || (window.__uiReviewReady === true && window.__uiReviewSurfaceReady === true));
+  const fixtureError = await page.evaluate(() => window.__uiReviewError);
+  assert.ok(!fixtureError, fixtureError);
   await page.evaluate(async () => {
     await document.fonts?.ready;
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));

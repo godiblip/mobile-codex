@@ -26,11 +26,17 @@ The APK-opening app may separately require **Allow from this source**. Menu name
 
 Mobile Codex is an independent Android client built around the Codex app-server. It bundles an Android port of Codex, Python, Node.js, and Git, so you do not need to install Termux or keep a separate PC server running.
 
-**0.2.12 stable** · **ARM64 / Android 10+** · Created by [nokryong](https://github.com/nokryong)
+**0.2.13 stable** · **ARM64 / Android 10+** · Created by [nokryong](https://github.com/nokryong)
 
 [Download APK](https://github.com/nokryong/mobile-codex/releases) · [Builds](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [Report an issue](https://github.com/nokryong/mobile-codex/issues)
 
 > This is not an official OpenAI app. Model inference requires an internet connection and an account with Codex access. The Codex process and file/command tools run on your Android device.
+
+## 0.2.13 update
+
+- **Codex Live:** Talk with Codex, give project work instructions by voice, and hear the results using your existing account.
+- **Voice settings:** Choose from the runtime's 25 voices in a collapsible list. Confirmed language groups appear together; Korean voices are labeled 한울 and 햇살.
+- **Model controls:** A compact model picker, English reasoning levels, and task permissions in one place. [Release notes](docs/releases/0.2.13.md).
 
 ## 0.2.12 fix
 
@@ -59,6 +65,7 @@ Project information can be transferred with JSON files; chat history, running ta
 | Projects and chats | Per-project chats and general chats using the default Codex folder; saved history, streaming, interruption, and additional instructions during a task |
 | Invited agents | Claude and Gemini (Antigravity) in the current Codex chat; participant mentions, concurrent replies and individual settings |
 | Fast | Opt-in Fast mode for supported Codex models |
+| Codex Live | Spoken conversation, voice instructions for project work, audible results, microphone mute, and voice selection |
 | Project information transfer | Export and import project IDs, names, and merge history with JSON files; bind local folders separately |
 | Files | Browse, search, read, create, edit, move, rename, and delete files; confirm changes and keep recovery copies |
 | Attachments and images | Attach multiple files, preview images, browse generated image galleries, zoom, swipe, and save originals |
@@ -79,7 +86,7 @@ You need an **ARM64 device running Android 10 or later**, an up-to-date Android 
 
 ### Download the APK
 
-Open the [0.2.12 release](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.12) and download **`mobile-codex-0.2.12-arm64.apk`** from the release assets. Open the APK and follow Android’s installation prompts. If requested, allow installation from the app you used to download/open it.
+Open the [0.2.13 release](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.13) and download **`mobile-codex-0.2.13-arm64.apk`** from the release assets. Open the APK and follow Android’s installation prompts. If requested, allow installation from the app you used to download/open it.
 
 New app versions are published automatically after the `main` workflow passes its tests, builds, and original-key signature verification. Alpha versions are marked as prereleases. A published version is never silently replaced; maintainers must increment both `versionName` and `versionCode` for the next release.
 
@@ -116,6 +123,12 @@ Use **Settings → Updates** to check public releases. The app verifies the APK 
 Since 0.1.7 the application ID is `dev.mobilecodex.app`. Older builds with a different ID install as a separate app. See [updates and releases](docs/app-updates.md).
 
 ## Using the app
+
+### Codex Live
+
+Tap the Live waveform button beside dictation to speak with Codex in the current chat. Ask it to read or edit project files and hear the results; existing project permissions and approvals still apply. Voice settings offer a collapsible list, language preference, and reconnect on Apply. Ending the call releases the microphone without cancelling an active task.
+
+For task instructions, use speech or the normal chat composer: text entered inside Live can receive a spoken acknowledgement without starting the requested task. See [voice input](docs/voice-input.md).
 
 ### Inviting Claude and Gemini
 
@@ -225,7 +238,7 @@ Additional technical documents are currently mostly in Korean.
 | [Localization](docs/localization.md) | UI translations and adding languages |
 | [Third-party notices](THIRD_PARTY_NOTICES.md) | Component sources and licenses |
 
-The runtime uses [`@mmmbuto/codex-cli-termux@0.162.1-termux.1`](https://github.com/DioNanos/codex-termux/tree/v0.162.1-termux.1). The UI connects through the [Codex app-server JSON-RPC protocol](https://github.com/openai/codex/tree/main/codex-rs/app-server). Android native executables are bundled directly in the APK; the Termux app is not installed.
+The runtime uses [`@mmmbuto/codex-cli-termux@0.162.1-termux.1`](https://github.com/DioNanos/codex-termux/tree/v0.162.1-termux.1) with the [Live voice patch](tools/runtime-patches/README.md). The UI connects through the [Codex app-server JSON-RPC protocol](https://github.com/openai/codex/tree/main/codex-rs/app-server). Android native executables are bundled directly in the APK; the Termux app is not installed.
 
 Versions and checksums are pinned in [`runtime-lock.json`](tools/runtime-lock.json) and [`devtools-lock.json`](tools/devtools-lock.json). Preparation scripts include Android packaging changes to executable names and library references. Original LICENSE/NOTICE files are retained in the APK; corresponding developer-tool sources accompany releases. Preserve these notices and sources when redistributing.
 

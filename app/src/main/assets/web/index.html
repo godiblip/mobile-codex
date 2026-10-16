@@ -3,16 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Mobile Codex</title>
   <link rel="stylesheet" href="app.css">
   <link rel="stylesheet" href="visual-system.css">
   <link rel="stylesheet" href="spacing.css">
   <link rel="stylesheet" href="agents.css">
+  <link rel="stylesheet" href="live.css">
   <script src="ui-core.js" defer></script>
   <script src="translations.js" defer></script>
   <script src="locale.js" defer></script>
   <script src="agents-ui.js" defer></script>
+  <script src="live.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -36,6 +38,8 @@
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
     <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></symbol>
+    <symbol id="i-live" viewBox="0 0 24 24"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
     <symbol id="i-attach" viewBox="0 0 24 24"><path d="m20.5 11.5-8.8 8.8a6 6 0 0 1-8.5-8.5L13.1 1.9a4 4 0 0 1 5.7 5.7l-10 10a2 2 0 0 1-2.9-2.9l9.2-9.2"/></symbol>
     <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
@@ -94,10 +98,10 @@
               </div>
               <button id="composer-folder" type="button" class="context-button" aria-label="작업 폴더 선택"><svg><use href="#i-folder"/></svg><span id="context-folder">폴더 선택</span></button>
               <div class="composer-actions">
+                <button id="composer-options" type="button" class="context-button options-button" aria-haspopup="dialog" aria-controls="model-picker" aria-expanded="false"><span id="model-summary">모델 목록 조회 필요</span><span id="effort-summary"></span><svg><use href="#i-down"/></svg></button>
                 <button id="fast-mode" type="button" class="icon-button fast-mode-button" aria-label="Fast 모드" aria-pressed="false" title="Fast 모드" disabled><svg><use href="#i-bolt"/></svg></button>
-                <label class="approval-mode-picker"><span class="sr-only">승인 방식</span><select id="approval-mode" aria-label="승인 방식"><option value="ask">승인 받기</option><option value="auto-review" selected>자동 검토</option><option value="allow-all">모두 허용</option></select></label>
-                <button id="composer-options" type="button" class="context-button options-button" aria-haspopup="dialog" aria-controls="options-dialog"><svg><use href="#i-settings"/></svg><span id="model-summary">모델 목록 조회 필요</span><svg><use href="#i-down"/></svg></button>
                 <button id="voice-input" type="button" class="icon-button voice-button" aria-label="음성 입력" title="음성 입력"><svg><use href="#i-mic"/></svg></button>
+                <button id="live-start" type="button" class="icon-button" aria-label="Live 음성 대화" title="Live"><svg><use href="#i-live"/></svg></button>
                 <button id="send" type="submit" class="send-button" aria-label="보내기" disabled><svg><use href="#i-up"/></svg></button>
                 <button id="stop" type="button" class="send-button" aria-label="작업 중지" hidden><svg><use href="#i-stop"/></svg></button>
               </div>
@@ -116,11 +120,30 @@
     <p id="invite-status" class="muted" role="status" aria-live="polite"></p>
     <button id="invite-confirm" class="primary-button sheet-done" type="button" disabled>초대</button>
   </dialog>
+  <dialog id="model-picker" aria-labelledby="model-picker-title">
+    <div class="model-picker-head"><span id="model-picker-title">추론 강도</span><button class="icon-button" data-close="model-picker" aria-label="닫기"><svg><use href="#i-close"/></svg></button></div>
+    <div id="model-picker-panels" class="model-picker-panels">
+      <section id="reasoning-panel" class="model-picker-panel">
+        <button id="model-picker-model" type="button" class="model-picker-heading" aria-controls="model-panel" aria-expanded="false"><strong id="effort-heading"></strong><span><span id="model-heading"></span><svg><use href="#i-down"/></svg></span></button>
+        <div id="reasoning-control" class="reasoning-control">
+          <input id="effort-slider" type="range" min="0" max="0" step="1" value="0" aria-label="추론 강도">
+        </div>
+        <p id="effort-unavailable" class="muted" hidden>추론 강도 조절 미지원</p>
+      </section>
+      <section id="model-panel" class="model-picker-panel" inert aria-hidden="true">
+        <button id="model-picker-back" type="button" class="model-picker-back"><svg><use href="#i-back"/></svg><span>추론 강도</span></button>
+        <div id="model-list" class="model-list" role="radiogroup" aria-label="모델"></div>
+      </section>
+    </div>
+    <small id="model-refresh-status" role="status" aria-live="polite" hidden></small>
+    <div class="model-picker-footer"><button id="model-picker-permissions" type="button"><svg><use href="#i-settings"/></svg><span>작업 권한</span><svg><use href="#i-down"/></svg></button></div>
+    <select id="model" hidden aria-hidden="true" tabindex="-1"><option value="">모델 목록 조회 필요</option></select>
+    <select id="effort" hidden aria-hidden="true" tabindex="-1"><option value="">추론 설정 정보 없음</option></select>
+    <span id="model-help" hidden></span>
+  </dialog>
   <dialog id="options-dialog" class="sheet-dialog options-sheet" aria-labelledby="options-title"><button type="button" class="sheet-grip" data-close="options-dialog" aria-label="아래로 끌거나 눌러서 닫기"><span aria-hidden="true"></span></button>
-    <div class="dialog-head"><div><p class="eyebrow">대화 설정</p><h2 id="options-title">모델 및 작업 방식</h2></div><button class="icon-button" data-close="options-dialog" aria-label="닫기"><svg><use href="#i-close"/></svg></button></div>
-    <p class="muted">모델과 추론 강도는 이 대화의 초안에 저장됩니다. 작업 권한은 앱 전체에 적용됩니다.</p>
-    <div class="option-field"><span>모델 <small id="model-refresh-status" role="status" aria-live="polite" hidden></small></span><div id="model-list" class="model-list" role="radiogroup" aria-label="모델"></div><select id="model" class="sr-only" aria-hidden="true" tabindex="-1"><option value="">모델 목록 조회 필요</option></select><small id="model-help">모델 목록을 새로고침해 주세요.</small></div>
-    <label class="option-field" for="effort"><span>추론 강도</span><select id="effort"><option value="">추론 설정 정보 없음</option></select></label>
+    <div class="dialog-head"><h2 id="options-title">작업 권한</h2><button class="icon-button" data-close="options-dialog" aria-label="닫기"><svg><use href="#i-close"/></svg></button></div>
+    <label class="option-field"><span>승인 방식</span><select id="approval-mode" aria-label="승인 방식"><option value="ask">승인 받기</option><option value="auto-review" selected>자동 검토</option><option value="allow-all">모두 허용</option></select></label>
     <fieldset class="permission-field"><legend>작업 권한</legend><label><input type="radio" name="permission" value="read-only"> <span><strong>읽기 전용</strong><small>파일을 살펴보고 제안합니다.</small></span></label><label><input type="radio" name="permission" value="workspace-write" checked> <span><strong>프로젝트 쓰기</strong><small>선택한 폴더 안에서 파일을 바꿀 수 있습니다.</small></span></label><label><input type="radio" name="permission" value="danger-full-access"> <span><strong>전체 접근</strong><small>앱에 허용된 기기 파일과 명령을 사용합니다.</small></span></label><select id="permissions" hidden><option value="read-only">읽기 전용</option><option value="workspace-write" selected>프로젝트 쓰기</option><option value="danger-full-access">전체 접근</option></select></fieldset>
     <p id="permission-help" class="muted"></p>
     <button class="primary-button sheet-done" data-close="options-dialog">완료</button>
@@ -145,5 +168,26 @@
   <button id="phone-stop-banner" class="phone-stop-banner" type="button" hidden>휴대폰 제어 켜짐 · 중지</button>
   <div id="toast" class="toast" role="status" hidden></div>
   <section id="reset-credits" class="reset-credits" aria-labelledby="reset-credits-title" aria-live="polite" hidden></section>
+  <dialog id="live-dialog" class="live-dialog" aria-labelledby="live-title">
+    <header class="live-head"><button id="live-settings-back" class="icon-button" aria-label="돌아가기" hidden><svg><use href="#i-back"/></svg></button><h2 id="live-title">Codex Live</h2><button id="live-settings-open" class="icon-button" aria-label="음성 설정"><svg><use href="#i-settings"/></svg></button></header>
+    <section id="live-conversation" class="live-conversation">
+      <div class="live-orb-stage"><div id="live-orb" class="live-orb" aria-hidden="true"></div></div>
+      <p id="live-status" class="live-status" role="status"></p>
+      <div id="live-task" class="live-task" hidden><span>Codex 작업 중</span><button id="live-task-stop" class="secondary-button">작업 중지</button></div>
+      <button id="live-retry" class="secondary-button" hidden>다시 연결</button>
+      <div class="live-captions"><p id="live-caption-user"></p><p id="live-caption-assistant"></p></div>
+      <div class="live-controls"><form id="live-text-form" class="live-text-form"><input id="live-text" aria-label="Codex에게 메시지" placeholder="Codex에게 메시지" autocomplete="off"><button id="live-text-send" class="icon-button" aria-label="보내기" disabled><svg><use href="#i-send"/></svg></button></form><button id="live-mute" class="icon-button" aria-label="마이크 끄기" aria-pressed="false"><svg><use href="#i-mic"/></svg></button><button id="live-end" data-close="live-dialog" class="icon-button" aria-label="음성 대화 종료"><svg><use href="#i-close"/></svg></button></div>
+    </section>
+    <section id="live-settings-panel" class="live-settings-panel" hidden>
+      <div class="live-setting"><span>모델</span><strong>Live</strong></div>
+      <details id="live-voice-picker" class="live-voice-picker">
+        <summary id="live-voice-toggle"><span>음성</span><span class="live-voice-current"><span id="live-voice-name"></span><svg><use href="#i-down"/></svg></span></summary>
+        <div id="live-voice-list" class="live-voice-list" role="radiogroup" aria-label="음성"></div>
+      </details>
+      <select id="live-voice" hidden aria-hidden="true" tabindex="-1"></select>
+      <label class="live-setting"><span>언어</span><select id="live-language" aria-label="언어"><option value="auto">자동</option><option value="ko">한국어</option><option value="en">English</option></select></label>
+      <button id="live-settings-apply" class="primary-button">적용</button>
+    </section>
+  </dialog>
 </body>
 </html>

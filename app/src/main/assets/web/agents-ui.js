@@ -6,7 +6,7 @@
     {id:'claude', provider:'claude', name:'Claude', account:'Claude Code'},
     {id:'gemini', provider:'agy', name:'Gemini', account:'Antigravity (Gemini)'},
   ];
-  const EFFORTS = {none:'없음', minimal:'최소', low:'낮음', medium:'중간', high:'높음', xhigh:'매우 높음'};
+  const EFFORTS = {none:'None', minimal:'Minimal', low:'Light', medium:'Medium', high:'High', xhigh:'Extra High', max:'Max', ultra:'Ultra'};
   const MODES = [{id:'chat', label:'대화만'}, {id:'read', label:'프로젝트 읽기'}, {id:'write', label:'프로젝트 수정'}];
   const PROVIDER_STATE = {ready:'연결됨', missing:'CLI 설치 필요', login_required:'로그인 필요', unavailable:'실행 확인 필요', unsupported:'업데이트 필요', unchecked:'확인 전', installing:'설치 중…', login:'로그인 진행 중…'};
   window.MobileCodexAgents = { init({call, getState, toast, show, close, closeAddMenu, closeFilePanel, openAccounts, openLinuxSettings, usageGauge, usageTime, getCharacters, characterIcon}) {
@@ -49,7 +49,7 @@
     }
     function field(label, input) { const l = el('label', null, 'option-field agent-field'); l.append(el('span', label), input); return l; }
     function effortOptions(values, fallback) {
-      return values.length ? values.map(id => ({id, label:t(EFFORTS[id] || id)})) : [{id:'', label:t(fallback)}];
+      return values.length ? values.map(id => ({id, label:EFFORTS[id] || id})) : [{id:'', label:t(fallback)}];
     }
 
     // ---- Participants panel ---------------------------------------------------------

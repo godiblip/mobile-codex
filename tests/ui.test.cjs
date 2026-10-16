@@ -71,11 +71,11 @@ test('text size rolls back failed saves and rejects an invalid native value',asy
  assert.match(w.document.getElementById('toast').textContent,/storage failed/);
  const invalid=setup({}, {textSize:999});await tick();assert.equal(invalid.w.document.getElementById('text-size').value,'100');
 });
-test('Fast is an explicit per-draft lightning toggle first in the bottom row',async()=>{
+test('Fast is an explicit per-draft lightning toggle next to the model picker',async()=>{
  const {w,calls,snapshot}=setup();await tick();const d=w.document;
  w.mobileCodexEvent('state',{...snapshot,models:[fastModel]});
  const toggle=d.getElementById('fast-mode');
- assert.equal(d.querySelector('.composer-actions').firstElementChild,toggle);
+ assert.equal(toggle.previousElementSibling,d.getElementById('composer-options'));
  assert.equal(toggle.querySelector('use').getAttribute('href'),'#i-bolt');
  assert.equal(toggle.disabled,false);assert.equal(toggle.getAttribute('aria-pressed'),'false');
  toggle.click();await tick();assert.equal(toggle.getAttribute('aria-pressed'),'true');
@@ -348,9 +348,11 @@ test('sidebar sections collapse independently and restore their state',async()=>
  const restored=setup({}, {drafts:{'sidebar-section-sessions':'collapsed'}});await tick();
  assert.equal(restored.w.document.getElementById('sessions').hidden,true);
 });
-test('composer exposes approval review beside the model without changing file access',async()=>{
+test('work permissions contains approval review without changing file access',async()=>{
  const {w,calls,snapshot}=setup({'approvals.set':()=>({ok:true})});await tick();
  const select=w.document.getElementById('approval-mode');assert.equal(select.value,'auto-review');
+ assert.equal(select.closest('#composer'),null);
+ assert.equal(select.closest('dialog').id,'options-dialog');
  select.value='allow-all';select.dispatchEvent(new w.Event('change'));await tick();
  assert.equal(calls.filter(m=>m.action==='approvals.set').at(-1).args.mode,'allow-all');
  assert.equal(w.document.getElementById('permissions').value,'workspace-write');
@@ -650,14 +652,16 @@ test('reading older messages stops streaming auto-scroll until latest is request
 test('mobile settings expose full model, reasoning and permission controls',async()=>{
  const {w,snapshot,calls}=setup({}, {mobile:true});await tick();const d=w.document;
  w.mobileCodexEvent('state',{...snapshot,models:[{id:'model-long',model:'model-long',displayName:'A model with a long name',supportedReasoningEfforts:[{reasoningEffort:'high'}]}]});
- d.getElementById('composer-options').click();await tick();assert.equal(d.getElementById('options-dialog').open,true);
+ d.getElementById('composer-options').click();await tick();assert.equal(d.getElementById('model-picker').open,true);
  const model=d.getElementById('model');model.value='model-long';model.dispatchEvent(new w.Event('change'));await tick();
+ d.getElementById('model-picker-permissions').click();await tick();assert.equal(d.getElementById('options-dialog').open,true);
+ assert.equal(d.getElementById('model-picker').open,false);
  d.getElementById('effort').value='high';d.getElementById('permissions').value='danger-full-access';d.getElementById('permissions').dispatchEvent(new w.Event('change'));await tick();
  assert.equal(d.getElementById('model-summary').textContent,'A model with a long name');
  assert.equal(calls.find(c=>c.action==='permissions.set').args.mode,'danger-full-access');
  assert.equal(d.getElementById('effort').value,'high');
 });
-test('opening model settings refreshes available models without waiting to show the sheet',async()=>{
+test('opening the model picker refreshes available models without waiting to show it',async()=>{
  let finish;
  const oldModels=[{id:'gpt-6-astra',displayName:'GPT-6-Astra'},{id:'gpt-5.6-sol',displayName:'GPT-5.6-Sol'}];
  const newModels=[...oldModels,{id:'gpt-6-sol',displayName:'GPT-6-Sol'},{id:'gpt-6-luna',displayName:'GPT-6-Luna'}];
@@ -665,7 +669,7 @@ test('opening model settings refreshes available models without waiting to show 
  const d=w.document;w.mobileCodexEvent('state',{...snapshot,models:oldModels});
  d.getElementById('model').value='gpt-6-astra';d.getElementById('model').dispatchEvent(new w.Event('change'));
  d.getElementById('composer-options').click();await tick();
- assert.equal(d.getElementById('options-dialog').open,true);
+ assert.equal(d.getElementById('model-picker').open,true);
  assert.equal(calls.filter(c=>c.action==='models.refresh').length,1);
  assert.match(d.getElementById('model-list').textContent,/GPT-5.6-Sol/);
  assert.doesNotMatch(d.getElementById('model-list').textContent,/GPT-6-Luna/);
@@ -677,6 +681,36 @@ test('opening model settings refreshes available models without waiting to show 
  assert.equal(d.getElementById('model-refresh-status').hidden,true);
  assert.equal(calls.some(c=>c.action==='runtime.stop'||c.action==='runtime.start'),false);
 });
+test('model picker sends actual catalog values and reselecting the active model returns to reasoning',async()=>{
+ const {w,snapshot,calls}=setup({}, {mobile:true});await tick();const d=w.document;
+ const models=[
+  {id:'catalog-a',displayName:'Catalog A',defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'high'}]},
+  {id:'catalog-b',displayName:'Catalog B',defaultReasoningEffort:'ultra',supportedReasoningEfforts:[{reasoningEffort:'medium'},{reasoningEffort:'ultra'}]}
+ ];
+ w.mobileCodexEvent('state',{...snapshot,models});
+ d.getElementById('composer-options').click();await tick();
+ assert.equal(d.getElementById('model').hidden,true);assert.equal(d.getElementById('effort').hidden,true);
+ d.getElementById('model-picker-model').click();await tick();
+ assert.equal(d.getElementById('model-panel').inert,false);
+ d.querySelector('#model-list input[value="catalog-b"]').click();await tick();
+ assert.equal(d.getElementById('model').value,'catalog-b');
+ assert.equal(d.getElementById('effort').value,'ultra');
+ assert.equal(d.getElementById('effort-heading').textContent,'Ultra');
+ assert.equal(d.getElementById('reasoning-panel').inert,false);
+ const slider=d.getElementById('effort-slider');assert.equal(slider.max,'1');
+ slider.value='0';slider.dispatchEvent(new w.Event('input'));slider.dispatchEvent(new w.Event('change'));await tick();
+ assert.equal(d.getElementById('effort').value,'medium');
+ assert.equal(d.getElementById('effort-heading').textContent,'Medium');
+ assert.equal(d.getElementById('effort-summary').textContent,d.getElementById('effort-heading').textContent);
+ d.getElementById('model-picker-model').click();await tick();
+ d.querySelector('#model-list input[value="catalog-b"]').click();await tick();
+ assert.equal(d.getElementById('model-panel').inert,true);
+ d.getElementById('prompt').value='Check the selected settings';
+ d.getElementById('composer').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+ const request=calls.find(c=>c.action==='chat.send');
+ assert.equal(request.args.model,'catalog-b');assert.equal(request.args.effort,'medium');
+});
+
 test('model refresh failure keeps the previous choices and explains their age',async()=>{
  const oldModels=[{id:'gpt-5.6-sol',displayName:'GPT-5.6-Sol'}];
  const {w,snapshot}=setup({'models.refresh':()=>{throw new Error('offline');}},{mobile:true});await tick();
@@ -1413,6 +1447,7 @@ function backdropPointer(w, dialog, x, y, target = dialog) {
 test('outside taps dismiss sheets and centered dialogs, while inside taps stay open',async()=>{
  const {w}=setup({}, {mobile:true});await tick();const d=w.document;
  d.getElementById('composer-options').click();await tick();
+ d.getElementById('model-picker-permissions').click();await tick();
  const sheet=d.getElementById('options-dialog');
  backdropPointer(w,sheet,100,300);
  assert.equal(sheet.open,true);
@@ -1449,6 +1484,7 @@ test('mobile sheet drag closes through the existing unsaved-instructions guard',
 });
 test('short or cancelled sheet drags stay open and do not turn into close clicks',async()=>{
  const {w}=setup({}, {mobile:true});await tick();const d=w.document;d.getElementById('composer-options').click();await tick();
+ d.getElementById('model-picker-permissions').click();await tick();
  const sheet=d.getElementById('options-dialog'),grip=sheet.querySelector('.sheet-grip');
  sheetPointer(w,grip,'pointerdown',100,20);sheetPointer(w,grip,'pointermove',100,48);sheetPointer(w,grip,'pointerup',100,48);
  grip.dispatchEvent(new w.MouseEvent('click',{bubbles:true,cancelable:true,detail:1}));assert.equal(sheet.open,true);
@@ -1460,6 +1496,7 @@ test('short or cancelled sheet drags stay open and do not turn into close clicks
 test('dragging content or a desktop dialog never dismisses it and approvals have no grip',async()=>{
  for(const mobile of [true,false]){
   const {w}=setup({}, {mobile});await tick();const d=w.document;d.getElementById('composer-options').click();await tick();
+  d.getElementById('model-picker-permissions').click();await tick();
   const sheet=d.getElementById('options-dialog'),target=mobile?sheet.querySelector('.dialog-head'):sheet.querySelector('.sheet-grip');
   sheetPointer(w,target,'pointerdown',100,20);sheetPointer(w,target,'pointermove',100,200);sheetPointer(w,target,'pointerup',100,200);
   assert.equal(sheet.open,true);assert.equal(d.querySelector('#request-dialog .sheet-grip'),null);

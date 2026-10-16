@@ -107,6 +107,7 @@ public final class Engine {
     private JSONArray models = new JSONArray();
     private JSONArray sessions = new JSONArray();
     private JSONObject active;
+    private volatile String liveRemote = "", liveLocal = "", liveKey = "";
     private Approval pendingApproval;
     private File stateFile;
     private final File workDir;
@@ -251,7 +252,7 @@ public final class Engine {
         return obj("ready", ready, "busy", busy, "status", t(status), "account", account,
             "authState", authState, "authError", t(authError),
             "accounts", accountProfiles.list(), "rateLimits", rateLimits, "models", models, "workspace", documents.workspace(), "projects", documents.projects(), "sessions", summaries,
-            "threadId", threadId, "turnId", turnId, "proBusy", (pendingConsultation != null && pendingConsultation.localThread.equals(threadId)) || (active != null && active.optJSONObject("proOperation") != null),
+            "threadId", threadId, "turnId", turnId, "live", obj("key", liveKey, "threadId", liveLocal), "proBusy", (pendingConsultation != null && pendingConsultation.localThread.equals(threadId)) || (active != null && active.optJSONObject("proOperation") != null),
             "pendingProConsultation", pendingConsultation == null ? JSONObject.NULL : uiJsonCopy(pendingConsultation.prepared),
             "consultProAvailable", consultProAvailable(),
             "consultProUnavailableReason", consultProAvailable() ? "" : t(consultMcpError),
@@ -432,8 +433,88 @@ public final class Engine {
         return moved;
     }
     public void updatesChanged(JSONObject data) { event("updates.changed", data); }
-    public boolean canInstallUpdate() { return (agentBridge == null || !agentBridge.busy()) && (roomCommand == null || !roomCommand.isAlive()) && roomLeases.isEmpty() && group == null && runningTurns.isEmpty() && !hasProOperations() && !VoiceInput.active() && !linux.status().optBoolean("busy") && !terminal.busy(); }
+    public boolean canInstallUpdate() { return liveRemote.isBlank() && (agentBridge == null || !agentBridge.busy()) && (roomCommand == null || !roomCommand.isAlive()) && roomLeases.isEmpty() && group == null && runningTurns.isEmpty() && !hasProOperations() && !VoiceInput.active() && !linux.status().optBoolean("busy") && !terminal.busy(); }
     public void voiceInputChanged() { event("voice.changed", obj()); }
+    public void stopLiveFromActivity() { io.execute(this::stopLive); }
+    private JSONObject startLive(JSONObject args) throws Exception {
+        ensureEngineIdle();
+        String key = args.getString("key"), sdp = args.getString("sdp");
+        String language = args.optString("language", "auto");
+        if (!Set.of("auto", "ko", "en").contains(language)) throw new IOException(t("지원하지 않는 언어 설정입니다."));
+        if (key.isBlank() || key.length() > 100 || !sdp.startsWith("v=0") || sdp.length() > 100000)
+            throw new IOException(t("음성 연결 요청이 올바르지 않습니다."));
+        documents.requireWorkspaceAvailable(); start();
+        if (account.length() == 0) throw new IOException(t("ChatGPT 계정으로 로그인해 주세요."));
+        JSONObject catalog = call("thread/realtime/listVoices", obj()).getJSONObject("voices");
+        JSONArray voices = catalog.optJSONArray("v3");
+        if (voices == null || voices.length() == 0) voices = catalog.getJSONArray("v1");
+        String voice = args.optString("voice", catalog.optString("defaultV1"));
+        boolean found = false;
+        for (int i = 0; i < voices.length(); i++) if (voice.equals(voices.optString(i))) found = true;
+        if (!found) throw new IOException(t("지원하지 않는 음성입니다. 목록을 새로고침해 주세요."));
+        String model = resolvedModel(args.optString("model"));
+        JSONObject config = obj();
+        if (!args.optString("effort").isBlank()) config.put("model_reasoning_effort", args.getString("effort"));
+        JSONObject params = threadStartParams(model);
+        params.put("config", config);
+        params.put("serviceTier", args.optBoolean("fastMode") ? fastServiceTier(model) : "default");
+        if (active == null || activeCodexThreadId().isBlank()) {
+            String remote = call("thread/start", params).getJSONObject("thread").getString("id");
+            if (active == null) {
+                threadId = "local-" + UUID.randomUUID();
+                active = obj("id", threadId, "sessionVersion", 2, "title", t("음성 대화"), "workspace", sessionWorkspaceName(),
+                    "workspaceKey", documents.key(), "model", model, "messages", new JSONArray(), "imageHistoryVersion", 1, "phoneToolsVersion", 1);
+                if (draftAgents.length() > 0) active.put("agents", new JSONArray(draftAgents.toString()));
+                draftAgents = new JSONArray(); sessions.put(active);
+            }
+            active.put("codexThreadId", remote); serverThreadId = remote;
+        } else {
+            if (!active.optString("workspaceKey").equals(documents.key())) throw new IOException(t("이 대화의 원래 작업 폴더를 다시 연결해 주세요."));
+            params.remove("dynamicTools"); params.put("threadId", activeCodexThreadId()).put("excludeTurns", true);
+            call("thread/resume", params); serverThreadId = activeCodexThreadId();
+        }
+        active.put("model", model).put("fastMode", args.optBoolean("fastMode")); persist();
+        liveRemote = activeCodexThreadId(); liveLocal = threadId; liveKey = key;
+        String instructions = "You are the voice interface for this Codex conversation. Delegate requested file and coding work to Codex. Existing permissions and approvals apply. Do not treat ordinary speech interruption as cancelling work.";
+        if (language.equals("ko")) instructions += " Speak Korean unless the user requests another language.";
+        else if (language.equals("en")) instructions += " Speak English unless the user requests another language.";
+        JSONObject request = obj("threadId", liveRemote, "version", "v3", "outputModality", "audio", "voice", voice,
+            "transport", obj("type", "webrtc", "sdp", sdp), "clientManagedHandoffs", false,
+            "includeStartupContext", true, "prompt", instructions, "realtimeSessionId", key);
+        try { call("thread/realtime/start", request); publish(); return obj("key", key, "threadId", threadId); }
+        catch (Exception error) { stopLive(); throw error; }
+    }
+    private void clearLive(String reason) {
+        if (liveKey.isBlank()) return;
+        String key = liveKey;
+        liveRemote = ""; liveLocal = ""; liveKey = "";
+        event("live.event", obj("key", key, "method", "thread/realtime/closed", "params", obj("reason", reason)));
+    }
+    private void stopLive() {
+        String remote = liveRemote;
+        clearLive("requested");
+        if (!remote.isBlank()) try { call("thread/realtime/stop", obj("threadId", remote), 10); } catch (Exception ignored) { }
+    }
+    private void liveNotification(String method, JSONObject params) throws Exception {
+        boolean currentLive = !liveRemote.isBlank() && liveRemote.equals(params.optString("threadId"));
+        if (currentLive) event("live.event", obj("key", liveKey, "method", method, "params", params));
+        if (method.equals("thread/realtime/item/completed")) {
+            // Canonical transcript tails may arrive after stop was acknowledged.
+            JSONObject item = params.optJSONObject("item"), owner = sessionByCodexThreadId(params.optString("threadId"));
+            if (item != null && owner != null && "transcriptSegment".equals(item.optString("type")) && !item.optString("text").isBlank()) {
+                String id = "live-" + item.getString("id"), role = item.getString("role");
+                JSONArray messages = owner.getJSONArray("messages");
+                boolean exists = false;
+                for (int i = 0; i < messages.length(); i++) if (id.equals(messages.getJSONObject(i).optString("id"))) exists = true;
+                if (!exists && Set.of("user", "assistant").contains(role)) {
+                    messages.put(obj("id", id, "role", role, "text", item.getString("text"), "kind", "liveTranscript", "createdAt", System.currentTimeMillis()));
+                    persist(); publish();
+                }
+            }
+        }
+        if (currentLive && method.equals("thread/realtime/error")) stopLive();
+        else if (currentLive && method.equals("thread/realtime/closed")) clearLive("closed");
+    }
     public void phoneStateChanged() { io.execute(this::publish); }
     public void handle(String action, JSONObject args, Reply reply) {
         if (action.startsWith("agents.")) {
@@ -461,6 +542,18 @@ public final class Engine {
                 if (Set.of("terminal.run", "files.mutate", "changes.restore", "recovery.restore").contains(action) && (!roomLeases.isEmpty() || (roomCommand != null && roomCommand.isAlive())))
                     throw new IOException(t("초대한 에이전트의 작업을 중지한 뒤 파일이나 명령을 실행해 주세요."));
                 switch (action) {
+                    case "live.voices" -> { start(); reply.complete(call("thread/realtime/listVoices", obj()), null); }
+                    case "live.start" -> { requireChatScope(args); reply.complete(startLive(args), null); }
+                    case "live.stop" -> { if (args.optString("key").equals(liveKey)) stopLive(); reply.complete(obj("ok", true), null); }
+                    case "live.text" -> {
+                        if (liveRemote.isBlank() || !args.optString("key").equals(liveKey)) throw new IOException(t("음성 연결이 종료되었습니다."));
+                        String text = args.optString("text").trim();
+                        if (text.isEmpty() || text.length() > 50000) throw new IOException(t("메시지는 최대 50,000자까지 입력할 수 있습니다."));
+                        JSONObject result = call("thread/realtime/appendText", obj("threadId", liveRemote, "role", "user", "text", text));
+                        JSONObject owner = session(liveLocal);
+                        if (owner != null) { owner.getJSONArray("messages").put(obj("id", UUID.randomUUID().toString(), "role", "user", "kind", "liveText", "text", text, "createdAt", System.currentTimeMillis())); persist(); publish(); }
+                        reply.complete(result, null);
+                    }
                     case "state" -> reply.complete(snapshot(), null);
                     case "phone.stop" -> { publish(); reply.complete(snapshot(), null); }
                     case "runtime.start" -> { autoRestorePaused = false; start(); reply.complete(snapshot(), null); }
@@ -677,7 +770,7 @@ public final class Engine {
         busy = !turnId.isBlank() || groupRunning(threadId);
         status = busy ? (!speaking.isBlank() && !speaking.equals(AgentGroup.CODEX) ? AgentGroup.name(speaking) + " · " + t("응답 중") : t("작업 중")) : (ready ? t("연결됨") : status);
     }
-    private void clearActive() { active = null; threadId = ""; turnId = ""; serverThreadId = ""; busy = false; if (ready) status = t("연결됨"); }
+    private void clearActive() { stopLive(); active = null; threadId = ""; turnId = ""; serverThreadId = ""; busy = false; if (ready) status = t("연결됨"); }
     public boolean isBusy() { return busy; }
     private boolean hasRunningTurns() { return !runningTurns.isEmpty(); }
     private boolean hasProOperations() {
@@ -689,6 +782,7 @@ public final class Engine {
         return false;
     }
     private void ensureSessionIdle(String id) throws IOException {
+        if (!liveLocal.isBlank() && liveLocal.equals(id)) throw new IOException(t("음성 대화를 먼저 종료해 주세요."));
         JSONObject target = session(id);
         if (runningTurns.containsKey(id) || groupRunning(id) || (id.equals(threadId) && busy))
             throw new IOException(t("현재 대화의 작업을 먼저 중지해 주세요."));
@@ -706,6 +800,7 @@ public final class Engine {
         }
     }
     private void ensureEngineIdle() throws IOException {
+        if (!liveRemote.isBlank()) throw new IOException(t("음성 대화를 먼저 종료해 주세요."));
         if(roomCommand!=null&&roomCommand.isAlive())throw new IOException(t("이전 명령이 종료 중입니다. 잠시 후 다시 보내 주세요."));
         if(!roomLeases.isEmpty()||group!=null)throw new IOException(t("초대한 에이전트의 답변을 먼저 중지해 주세요."));
         if (hasRunningTurns() || hasProOperations()) throw new IOException(t("진행 중인 작업을 먼저 중지해 주세요."));
@@ -725,6 +820,7 @@ public final class Engine {
                 && !terminal.busy()) context.stopService(new Intent(context, EngineService.class));
     }
     private void clearRunningState() {
+        clearLive("runtimeStopped");
         GroupRun run = group; if (run != null) cancelGroup(run);
         if (pendingConsultation != null) finishConsultation(pendingConsultation, "failed", t("Codex 연결이 종료되어 Pro 문의를 완료하지 못했습니다."), null);
         consultGrants.clear(); consultMcpReady = false; consultMcpThread = ""; consultMcpError = ""; consultMcpThreads.clear();
@@ -1595,6 +1691,7 @@ public final class Engine {
         return normalized.equals(scoped) ? normalized : "";
     }
     private void send(String text, String model, String effort, JSONArray attachmentIds, JSONArray skills, JSONArray mentions, Boolean fastMode, boolean consultPro) throws Exception {
+        if (!liveRemote.isBlank()) throw new IOException(t("음성 화면에서 메시지를 보내거나 음성 대화를 종료해 주세요."));
         // A new message from the user ends the previous answering order.
         GroupRun previousRun = group; if (previousRun != null) cancelGroup(previousRun);
         if (roomCommand != null && roomCommand.isAlive()) throw new IOException(t("이전 명령이 종료 중입니다. 잠시 후 다시 보내 주세요."));
@@ -1686,6 +1783,7 @@ public final class Engine {
         } catch (Exception e) { syncCurrentTurn(); status = t("요청 실패"); publish(); throw e; }
     }
     private void resume(String id) throws Exception {
+        if (!id.equals(threadId)) stopLive();
         for (int i = 0; i < sessions.length(); i++) {
             JSONObject session = sessions.getJSONObject(i);
             if (!session.optBoolean("deletionPending") && session.optString("id").equals(id)) {
@@ -1815,6 +1913,7 @@ public final class Engine {
     }
     private void onNotification(String method, JSONObject p) {
         try {
+            if (method.startsWith("thread/realtime/")) { liveNotification(method, p); return; }
             if (method.equals("account/login/completed")) {
                 loginInProgress = false;
                 if (p.optBoolean("success")) {
@@ -2329,6 +2428,7 @@ public final class Engine {
     }
     /** Invites, reconfigures or removes agents of the open chat (or of the next new chat). */
     private void setAgents(JSONArray changes) throws Exception {
+        if (!liveRemote.isBlank()) throw new IOException(t("음성 대화를 먼저 종료해 주세요."));
         if (changes == null || changes.length() == 0) throw new IOException(t("초대할 에이전트를 선택해 주세요."));
         if (groupRunning(threadId)) throw new IOException(t("에이전트가 답하는 중에는 참가자를 바꿀 수 없습니다. 먼저 중지해 주세요."));
         JSONObject owner = active;
