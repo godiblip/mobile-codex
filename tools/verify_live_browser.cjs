@@ -54,12 +54,24 @@ async function main(){
    catch(error) { console.log(await page.evaluate(()=>({status:document.querySelector('#live-status').textContent,calls:window.__liveFx.calls.map(c=>c.action),peers:window.__liveFx.peers.map(p=>p.pc.connectionState)})),errors); throw error; }
    assert.equal(await page.locator('#live-dialog').evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
    assert.equal(await page.locator('#live-orb').evaluate(el=>el.getBoundingClientRect().width>100),true);
+   // Android owns background microphone eligibility. This verifies the web side
+   // keeps the existing peer/session across hide/show and still accepts events.
+   const hiddenKey=await page.evaluate(()=>window.__liveFx.calls.find(c=>c.action==='live.start').args.key);
+   await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
+   await page.evaluate(()=>{const key=window.__liveFx.peers[0].key;window.mobileCodexEvent('live.event',{key,method:'thread/realtime/transcript/done',params:{role:'assistant',text:'background reply'}});});
+   await page.waitForFunction(()=>document.querySelector('#live-caption-assistant').textContent==='background reply');
+   assert.equal(await page.evaluate(()=>window.__liveFx.calls.filter(c=>c.action==='live.stop').length),0);
+   assert.equal(await page.evaluate(()=>window.__liveFx.peers[0].pc.connectionState),'connected');
+   await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});
+   assert.equal(await page.evaluate(()=>window.__liveFx.calls.find(c=>c.action==='live.start').args.key),hiddenKey);
+   await page.evaluate(()=>window.mobileCodexEvent('live.interrupted',{key:'stale-call'}));
+   assert.equal(await page.locator('#live-status').textContent(),'듣고 있어요');
    await page.screenshot({path:path.join(out,`live-${captureId}.png`)});
    await page.locator('#live-mute').click();assert.equal(await page.locator('#live-mute').getAttribute('aria-pressed'),'true');
    await page.locator('#live-text').fill('read this');await page.locator('#live-text-form').evaluate(form=>form.requestSubmit());
    await page.waitForFunction(()=>window.__liveFx.calls.some(c=>c.action==='live.text'&&c.args.text==='read this'));
    await page.evaluate(()=>{const key=window.__liveFx.calls.find(c=>c.action==='live.start').args.key;window.mobileCodexEvent('live.event',{key,method:'thread/realtime/transcript/delta',params:{role:'assistant',delta:'<script>safe text</script>'}});});
-   assert.equal(await page.locator('#live-caption-assistant').textContent(),'<script>safe text</script>');
+   assert.equal(await page.locator('#live-caption-assistant').textContent(),'background reply<script>safe text</script>');
    await page.locator('#live-settings-open').click();
    assert.equal(await page.locator('#live-voice').isVisible(),false);
    assert.equal(await page.locator('#live-voice-picker').evaluate(el=>el.open),false);
@@ -84,6 +96,10 @@ async function main(){
    assert.equal(await page.locator('#live-voice-name').textContent(),'한울');
    assert.equal(await page.locator('#live-voice-picker').evaluate(el=>el.open),false);
    await page.locator('#live-settings-back').click();
+   // Notification/focus-loss events also close a hidden call and its audio.
+   await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));const key=window.__liveFx.peers.at(-1).key;window.mobileCodexEvent('live.interrupted',{key});});
+   await page.waitForFunction(()=>window.__liveFx.peers.every(peer=>peer.pc.connectionState==='closed'));
+   await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});
    await page.locator('#live-end').click();await page.waitForFunction(()=>!document.querySelector('#live-dialog').open);
    assert.equal(await page.evaluate(()=>window.__liveFx.peers.every(peer=>peer.pc.connectionState==='closed')),true);
    // Permission denial and cancellation while permission is pending never open a backend call.

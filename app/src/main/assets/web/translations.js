@@ -1,6 +1,7 @@
 /* UI messages only; user/model/file content is never translated. */
 window.MobileCodexEnglish = {
   "Live 음성 대화": "Live voice conversation",
+  "음성 대화 중": "Voice conversation in progress",
   "Codex 작업 중": "Codex is working",
   "음성 설정": "Voice settings",
   "한국어": "Korean",

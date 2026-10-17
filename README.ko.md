@@ -26,11 +26,16 @@ APK를 여는 앱에서 **이 출처 허용**을 별도로 요구할 수 있습�
 
 Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라이언트입니다. Codex 실행 엔진과 Python·Node.js·Git을 APK에 포함해, Termux 설치나 별도 PC 서버 없이 기기에서 바로 작업할 수 있습니다.
 
-**0.2.13 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
+**0.2.14 정식 버전** · **ARM64 / Android 10 이상** · 제작 [nokryong](https://github.com/nokryong)
 
 [APK 다운로드](https://github.com/nokryong/mobile-codex/releases) · [개발 빌드](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [문제 제보](https://github.com/nokryong/mobile-codex/issues)
 
 > OpenAI 공식 앱이 아닌 개인 프로젝트입니다. 모델 추론에는 인터넷과 Codex를 사용할 수 있는 계정이 필요합니다. Codex 프로세스와 파일·명령 도구는 Android 기기에서 실행합니다.
+
+## 0.2.14 업데이트
+
+- **백그라운드 음성:** 다른 앱으로 전환하거나 화면을 꺼도 Codex Live 대화를 이어갑니다.
+- **통화 알림:** 알림에서 Live로 돌아가거나 음성을 종료합니다. 종료하면 마이크를 해제하며 진행 중인 Codex 작업은 유지합니다. [릴리스 노트](docs/releases/0.2.14.md).
 
 ## 0.2.13 업데이트
 
@@ -86,7 +91,7 @@ Codex 데스크톱의 작업 방식을 모바일로 옮기는 개인용 클라�
 
 ### APK 받기
 
-[0.2.13 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.13)에서 **`mobile-codex-0.2.13-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
+[0.2.14 릴리스](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.14)에서 **`mobile-codex-0.2.14-arm64.apk`**를 받습니다. 일반 빌드의 설치 파일은 Releases에 게시합니다. [Actions → Android APK](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml)의 **Artifacts**에는 아래 검사 자료를 보관하며, APK 산출물은 `apk_only`를 선택한 수동 테스트 실행에만 있습니다.
 
 | Actions 산출물 | 용도 |
 | --- | --- |
@@ -129,6 +134,8 @@ Actions 산출물 다운로드에는 GitHub 로그인이 필요하며, 보관 �
 ### Codex Live
 
 입력창의 Live 버튼을 누르면 Codex와 음성으로 대화합니다. 프로젝트에서 파일 읽기·수정 같은 작업을 말로 지시하고 결과를 음성으로 들을 수 있습니다. 음성 설정에서 목소리와 언어를 선택하고 마이크 음소거·종료 버튼으로 제어합니다.
+
+시작한 음성 대화는 다른 앱으로 전환하거나 화면을 꺼도 이어집니다. Codex Live 알림을 누르면 대화로 돌아가고, 알림의 종료 버튼은 음성 연결만 끝냅니다.
 
 현재 Live 화면에 글자로 입력한 메시지는 음성 답변까지 지원하며 작업 실행으로 이어지지 않습니다. 작업은 말로 지시하거나 기존 대화 입력창을 사용하세요.
 

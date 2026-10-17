@@ -163,7 +163,10 @@
       finally { loading = false; update(); }
     }
     async function event(name, data) {
-      if (name === 'live.interrupted') { await end({hide:false, message:'음성 대화가 중단되었습니다.'}); return; }
+      if (name === 'live.interrupted') {
+        if (!data?.key || data.key === current?.key) await end({hide:false, message:'음성 대화가 중단되었습니다.'});
+        return;
+      }
       if (name !== 'live.event') return;
       const session = current;
       if (!session || session.key !== data.key) return;
@@ -213,7 +216,12 @@
       if (restart) { await end({hide:false}); await start(); } else setSettings(false);
     });
     $('live-dialog').addEventListener('close', () => { if (current) end(); });
-    document.addEventListener('visibilitychange', () => { if (document.hidden && current) end({hide:false, message:'음성 대화가 중단되었습니다.'}); });
+    // Native foreground audio service owns background capture; hiding only stops drawing.
+    document.addEventListener('visibilitychange', () => {
+      if (!current) return;
+      cancelAnimationFrame(current.frame);
+      if (!document.hidden) animate(current);
+    });
     return {active, update, event, end};
   }
   if (typeof module !== 'undefined') module.exports = {voicesFrom, voiceName, voiceGroups};

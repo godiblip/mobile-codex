@@ -26,11 +26,16 @@ The APK-opening app may separately require **Allow from this source**. Menu name
 
 Mobile Codex is an independent Android client built around the Codex app-server. It bundles an Android port of Codex, Python, Node.js, and Git, so you do not need to install Termux or keep a separate PC server running.
 
-**0.2.13 stable** · **ARM64 / Android 10+** · Created by [nokryong](https://github.com/nokryong)
+**0.2.14 stable** · **ARM64 / Android 10+** · Created by [nokryong](https://github.com/nokryong)
 
 [Download APK](https://github.com/nokryong/mobile-codex/releases) · [Builds](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [Report an issue](https://github.com/nokryong/mobile-codex/issues)
 
 > This is not an official OpenAI app. Model inference requires an internet connection and an account with Codex access. The Codex process and file/command tools run on your Android device.
+
+## 0.2.14 update
+
+- **Background voice:** Keep talking with Codex Live after switching apps or locking the screen.
+- **Call notification:** Return to Live or end voice from the notification. Ending voice releases the microphone without cancelling Codex work. [Release notes](docs/releases/0.2.14.md).
 
 ## 0.2.13 update
 
@@ -86,7 +91,7 @@ You need an **ARM64 device running Android 10 or later**, an up-to-date Android 
 
 ### Download the APK
 
-Open the [0.2.13 release](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.13) and download **`mobile-codex-0.2.13-arm64.apk`** from the release assets. Open the APK and follow Android’s installation prompts. If requested, allow installation from the app you used to download/open it.
+Open the [0.2.14 release](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.14) and download **`mobile-codex-0.2.14-arm64.apk`** from the release assets. Open the APK and follow Android’s installation prompts. If requested, allow installation from the app you used to download/open it.
 
 New app versions are published automatically after the `main` workflow passes its tests, builds, and original-key signature verification. Alpha versions are marked as prereleases. A published version is never silently replaced; maintainers must increment both `versionName` and `versionCode` for the next release.
 
@@ -127,6 +132,8 @@ Since 0.1.7 the application ID is `dev.mobilecodex.app`. Older builds with a dif
 ### Codex Live
 
 Tap the Live waveform button beside dictation to speak with Codex in the current chat. Ask it to read or edit project files and hear the results; existing project permissions and approvals still apply. Voice settings offer a collapsible list, language preference, and reconnect on Apply. Ending the call releases the microphone without cancelling an active task.
+
+An active voice conversation continues when switching apps or locking the screen. Tap the Codex Live notification to return, or use its End action to stop voice only.
 
 For task instructions, use speech or the normal chat composer: text entered inside Live can receive a spoken acknowledgement without starting the requested task. See [voice input](docs/voice-input.md).
 

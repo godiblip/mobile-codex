@@ -2,7 +2,9 @@
 
 ## Codex Live
 
-The Live button next to dictation opens a voice conversation in the current Codex chat. The central orb follows actual input and output audio levels. Microphone mute, text input, voice/language settings, and end-call controls are available. Ending voice does not interrupt an existing Codex task. Backgrounding the activity, losing audio focus, or changing chats ends voice capture; returning never restarts it automatically.
+The Live button next to dictation opens a voice conversation in the current Codex chat. The central orb follows actual input and output audio levels. Microphone mute, text input, voice/language settings, and end-call controls are available. A call started while the app is visible continues when switching apps or locking the screen. The Codex Live notification opens the call or ends voice without interrupting an existing Codex task. Losing audio focus, changing chats, removing the task, or destroying the activity ends capture; returning never restarts an ended call automatically.
+
+`LiveAudioService` holds microphone/media-playback foreground service eligibility, audio focus, and a partial wake lock only for the current call. The activity keeps the existing WebRTC peer and receives engine events while hidden; rendering is paused. Capture is never started from the background. Native teardown releases resources on errors even when the web page is hidden. Pending task approvals still require the existing approval flow. Device battery management or process termination can end a call.
 
 The app uses the bundled Codex app-server's experimental v3 WebRTC protocol and existing account. Audio is carried by WebRTC; native signaling and delegated work use the existing engine, task model, permissions, and approval handling. There is no API-key fallback or alternate model. Unsupported account access and connection errors remain visible.
 
@@ -12,7 +14,7 @@ For work requests, use speech or the normal chat composer. In device testing, te
 
 `node tools/verify_live_browser.cjs` exercises a real local WebRTC peer with synthetic test audio and a fixture bridge at 320/390/1280px. It checks connection, settings/reconnection, mute, text, denied/cancelled permissions, and cleanup. This is not evidence of OpenAI account access or physical-device audio.
 
-Device acceptance: install the test APK over the existing app with the original signing certificate; retain login and history. Verify login remains, Live connects, both speakers are audible, the orb follows both audio levels, Korean speech, mute, text, voice changes, interruption, delegated work/approval, end-call without cancelling work, background/screen-lock cleanup, and persisted transcripts after restart. Check Android logs for each failure. Do not publish until physical-device testing and user acceptance are complete.
+Device acceptance: install the test APK over the existing app with the original signing certificate; retain login and history. Verify login remains, Live connects, both speakers are audible, the orb follows both audio levels, Korean speech, mute, text, voice changes, interruption, delegated work/approval, and persisted transcripts after restart. During a call, switch to another app and then lock the screen; verify speech and spoken work results continue in both states. Return and confirm the same call and transcript remain. End using the notification and verify the microphone indicator, Live notification, and wake lock are released while an existing Codex task continues. Also check focus loss, task removal, network failure, and immediate cancellation during startup. Check Android logs for each failure. Do not publish until physical-device testing and user acceptance are complete.
 
 ## Dictation
 
