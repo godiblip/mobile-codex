@@ -27,9 +27,14 @@ public class LiveAudioServiceTest {
         try {
             var service=controller.get(); var stopped=new AtomicInteger();
             service.begin("one",stopped::incrementAndGet);
+            org.robolectric.Shadows.shadowOf(service).getNextStartedService(); // Service now owns its lifetime.
             var lock=lock(service); assertTrue(lock.isHeld());
             var notices=service.getSystemService(NotificationManager.class).getActiveNotifications();
             assertEquals(1,notices.length); assertEquals(LiveAudioService.NOTIFICATION_ID,notices[0].getId());
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                assertEquals("android.app.Notification$CallStyle",notices[0].getNotification().extras.getString(android.app.Notification.EXTRA_TEMPLATE));
+                assertTrue(notices[0].getNotification().extras.getBoolean(android.app.Notification.EXTRA_SHOW_CHRONOMETER));
+            }
             notices[0].getNotification().actions[0].actionIntent.send();
             Intent stop=org.robolectric.Shadows.shadowOf(service).getNextStartedService();
             assertEquals(LiveAudioService.STOP,stop.getAction()); assertEquals("one",stop.getStringExtra("key"));

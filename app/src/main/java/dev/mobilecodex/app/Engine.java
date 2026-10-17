@@ -435,6 +435,7 @@ public final class Engine {
     public void updatesChanged(JSONObject data) { event("updates.changed", data); }
     public boolean canInstallUpdate() { return liveRemote.isBlank() && (agentBridge == null || !agentBridge.busy()) && (roomCommand == null || !roomCommand.isAlive()) && roomLeases.isEmpty() && group == null && runningTurns.isEmpty() && !hasProOperations() && !VoiceInput.active() && !linux.status().optBoolean("busy") && !terminal.busy(); }
     public void voiceInputChanged() { event("voice.changed", obj()); }
+    void liveAudioChanged(JSONObject state) { event("live.audio", state); }
     public void stopLiveFromActivity() { io.execute(this::stopLive); }
     private JSONObject startLive(JSONObject args) throws Exception {
         ensureEngineIdle();

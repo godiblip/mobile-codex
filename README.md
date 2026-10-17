@@ -26,11 +26,16 @@ The APK-opening app may separately require **Allow from this source**. Menu name
 
 Mobile Codex is an independent Android client built around the Codex app-server. It bundles an Android port of Codex, Python, Node.js, and Git, so you do not need to install Termux or keep a separate PC server running.
 
-**0.2.14 stable** · **ARM64 / Android 10+** · Created by [nokryong](https://github.com/nokryong)
+**0.2.15 stable** · **ARM64 / Android 10+** · Created by [nokryong](https://github.com/nokryong)
 
 [Download APK](https://github.com/nokryong/mobile-codex/releases) · [Builds](https://github.com/nokryong/mobile-codex/actions/workflows/android.yml) · [Report an issue](https://github.com/nokryong/mobile-codex/issues)
 
 > This is not an official OpenAI app. Model inference requires an internet connection and an account with Codex access. The Codex process and file/command tools run on your Android device.
+
+## 0.2.15 update
+
+- **Live audio reliability:** Native Android voice processing improves background playback when switching apps or locking the screen.
+- **Ongoing call indicator:** Android 12 and later use a system call notification with elapsed time and an End action. Returning after ending voice restores the correct screen state. [Release notes](docs/releases/0.2.15.md).
 
 ## 0.2.14 update
 
@@ -91,7 +96,7 @@ You need an **ARM64 device running Android 10 or later**, an up-to-date Android 
 
 ### Download the APK
 
-Open the [0.2.14 release](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.14) and download **`mobile-codex-0.2.14-arm64.apk`** from the release assets. Open the APK and follow Android’s installation prompts. If requested, allow installation from the app you used to download/open it.
+Open the [0.2.15 release](https://github.com/nokryong/mobile-codex/releases/tag/v0.2.15) and download **`mobile-codex-0.2.15-arm64.apk`** from the release assets. Open the APK and follow Android’s installation prompts. If requested, allow installation from the app you used to download/open it.
 
 New app versions are published automatically after the `main` workflow passes its tests, builds, and original-key signature verification. Alpha versions are marked as prereleases. A published version is never silently replaced; maintainers must increment both `versionName` and `versionCode` for the next release.
 

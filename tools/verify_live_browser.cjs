@@ -1,4 +1,4 @@
-/* Real browser WebRTC/audio with a local peer and explicit Native fixtures, not a model test. */
+/* UI/bridge fixtures only. Native WebRTC/audio requires Android tests and a real device. */
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path');
@@ -21,30 +21,36 @@ async function fixture(){
     }
     if(action==='live.stop'){
       const peer=fx.peers.find(peer=>peer.key===args.key);
-      if(peer){peer.pc.close();await peer.audio.close();}return reply();
+      if(peer)peer.pc.connectionState='closed';return reply();
+    }
+    if(action==='live.status')return reply(fx.peers.find(p=>p.pc.connectionState!=='closed')?.state || {key:''});
+    if(action==='live.mute'){
+      const peer=fx.peers.find(peer=>peer.key===args.key);
+      if(!peer)return reply(null,'Voice ended');
+      peer.state.muted=args.muted;emit('live.audio',peer.state);return reply(peer.state);
     }
     if(action==='live.text')return reply();
     if(action==='live.start'){
-      const pc=new RTCPeerConnection(),audio=new AudioContext(),oscillator=audio.createOscillator(),destination=audio.createMediaStreamDestination();
-      const gain=audio.createGain();gain.gain.value=.03;oscillator.connect(gain);gain.connect(destination);oscillator.start();
-      pc.addTrack(destination.stream.getAudioTracks()[0],destination.stream);
-      fx.peers.push({pc,audio,key:args.key});
-      await pc.setRemoteDescription({type:'offer',sdp:args.sdp});await pc.setLocalDescription(await pc.createAnswer());
-      if(pc.iceGatheringState!=='complete')await new Promise(resolve=>pc.addEventListener('icegatheringstatechange',()=>{if(pc.iceGatheringState==='complete')resolve();}));
-      reply({key:args.key,threadId:fx.state.threadId});
-      emit('live.event',{key:args.key,method:'thread/realtime/sdp',params:{sdp:pc.localDescription.sdp}});
+      const state={key:args.key,threadId:fx.state.threadId,phase:'connected',connected:true,muted:false,input:.2,output:.4};
+      fx.peers.push({pc:{connectionState:'connected'},state,key:args.key});
+      reply(state);emit('live.audio',state);
     }
   };
   window.Native.postMessage(JSON.stringify({id:'live-fixture-state',action:'state',args:{}}));
 }
 async function main(){
  const server=createReviewServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));
- const browser=await chromium.launch({headless:true,args:['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream','--autoplay-policy=no-user-gesture-required']});
+ const browser=await chromium.launch({headless:true});
  const out=path.join(__dirname,'../artifacts/live-browser');fs.mkdirSync(out,{recursive:true});
  try{
   for(const [width,theme] of [[320,'light'],[390,'light'],[390,'dark'],[1280,'light']]){
    const captureId=width+(theme==='dark'?'-dark':'');
-   const context=await browser.newContext({viewport:{width,height:844},permissions:['microphone']});const page=await context.newPage();const errors=[];
+   const context=await browser.newContext({viewport:{width,height:844}});const page=await context.newPage();const errors=[];
+   await page.addInitScript(()=>{
+     window.RTCPeerConnection=class {constructor(){throw Error('WebView must not own a peer');}};
+     navigator.mediaDevices.getUserMedia=()=>{throw Error('WebView must not capture audio');};
+     window.Audio=class {constructor(){throw Error('WebView must not play audio');}};
+   });
    page.on('pageerror',e=>errors.push(e.message));
    await page.goto('http://127.0.0.1:'+server.address().port+'/app?language=ko&theme='+theme);
    await page.waitForFunction(()=>window.mobileCodexEvent&&window.Native&&document.getElementById('live-start'));
@@ -110,7 +116,18 @@ async function main(){
    await page.waitForFunction(()=>window.__liveFx.releaseMicrophone);await page.locator('#live-end').click();await page.evaluate(()=>window.__liveFx.releaseMicrophone());
    await page.waitForFunction(()=>!document.querySelector('#live-start').disabled);
    assert.equal(await page.evaluate(()=>window.__liveFx.calls.filter(c=>c.action==='live.start').length),2);
-   assert.deepEqual(errors,[]);await context.close();console.log(`Live WebRTC/UI ${width}px ${theme} passed`);
+   // A recreated page restores the already-running native call without starting another one.
+   await page.evaluate(()=>{
+     const fx=window.__liveFx,state={key:'restored-native-call',phase:'connected',connected:true,muted:true,
+       threadId:fx.state.threadId,input:0,output:.3,userCaption:'saved user',assistantCaption:'saved reply'};
+     fx.peers.push({key:state.key,pc:{connectionState:'connected'},state});
+     fx.state.live={key:state.key};window.mobileCodexEvent('state',fx.state);
+   });
+   await page.waitForFunction(()=>document.querySelector('#live-caption-assistant').textContent==='saved reply');
+   assert.equal(await page.locator('#live-mute').getAttribute('aria-pressed'),'true');
+   assert.equal(await page.evaluate(()=>window.__liveFx.calls.filter(c=>c.action==='live.start').length),2);
+   await page.locator('#live-end').click();
+   assert.deepEqual(errors,[]);await context.close();console.log(`Live native bridge/UI ${width}px ${theme} passed`);
   }
  }finally{await browser.close();await new Promise(r=>server.close(r));}
 }

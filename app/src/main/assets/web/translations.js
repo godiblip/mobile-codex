@@ -1,5 +1,7 @@
 /* UI messages only; user/model/file content is never translated. */
 window.MobileCodexEnglish = {
+  "음성 재생을 시작할 수 없습니다.": "Unable to start voice playback.",
+  "음성 재생이 중단되었습니다. 다시 연결해 주세요.": "Voice playback stopped. Please reconnect.",
   "Live 음성 대화": "Live voice conversation",
   "음성 대화 중": "Voice conversation in progress",
   "Codex 작업 중": "Codex is working",

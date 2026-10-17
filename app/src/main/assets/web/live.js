@@ -1,4 +1,4 @@
-/* Audio stays on the authenticated Codex WebRTC call; only SDP crosses Native. */
+/* The native foreground service owns audio; this page only displays and controls it. */
 (() => {
   'use strict';
   function voicesFrom(result) {
@@ -24,6 +24,7 @@
   function create({call, getState, getOptions, show, close, t, errorText, changed}) {
     const $ = id => document.getElementById(id);
     let current = null, voices = [], loading = false, settings = false;
+    let dismissedKey = '', restoringKey = '';
     let voice = localStorage.getItem('live-voice') || '', language = localStorage.getItem('live-language') || 'auto';
     const active = () => !!current;
     const status = text => { $('live-status').textContent = t(text); };
@@ -31,13 +32,17 @@
       const state = getState();
       $('live-task').hidden = !state.busy || !state.turnId;
       $('live-start').disabled = loading || !!current || !!state.busy || !!state.proBusy || !state.account?.type;
-      $('live-mute').disabled = !current?.stream;
+      $('live-mute').disabled = !current?.connected;
       $('live-text-send').disabled = !current?.connected || !!current?.sending || !$('live-text').value.trim();
       $('live-mute').setAttribute('aria-pressed', String(!!current?.muted));
       $('live-mute').setAttribute('aria-label', t(current?.muted ? '마이크 켜기' : '마이크 끄기'));
       $('live-mute').classList.toggle('muted', !!current?.muted);
       $('live-retry').hidden = !!current;
       if (current?.localThread && state.threadId !== current.localThread) end();
+      if (!current && !loading && state.live?.key && state.live.key !== dismissedKey && state.live.key !== restoringKey) {
+        restoringKey = state.live.key;
+        call('live.status').then(applyNativeState).catch(() => {});
+      }
     }
     function setSettings(value) {
       settings = value; $('live-settings-panel').hidden = !value; $('live-conversation').hidden = value;
@@ -71,15 +76,13 @@
       $('live-language').value = ['auto','ko','en'].includes(language) ? language : 'auto';
     }
     function release(session) {
-      clearTimeout(session.timeout); clearTimeout(session.disconnectTimer); cancelAnimationFrame(session.frame);
-      session.stream?.getTracks().forEach(track => track.stop());
-      session.pc?.close(); session.audio?.pause(); if (session.audio) session.audio.srcObject = null;
-      session.context?.close().catch(() => {});
+      cancelAnimationFrame(session.frame);
       $('live-orb').style.transform = '';
     }
     async function end({hide = true, message = ''} = {}) {
       const previous = current; current = null;
       if (previous) {
+        dismissedKey = previous.key;
         release(previous);
         // A stale stop is keyed and cannot terminate a replacement session.
         await call('live.stop', {key:previous.key}).catch(() => {});
@@ -93,19 +96,28 @@
       if (current !== session) return;
       end({hide:false, message:errorText(error, t('음성 연결에 실패했습니다. 다시 연결해 주세요.'))});
     }
-    function meter(context, stream) {
-      const source = context.createMediaStreamSource(stream), analyser = context.createAnalyser();
-      analyser.fftSize = 256; source.connect(analyser);
-      return {analyser, samples:new Float32Array(analyser.fftSize)};
-    }
-    function amplitude(meter) {
-      if (!meter) return 0;
-      meter.analyser.getFloatTimeDomainData(meter.samples);
-      return Math.min(1, Math.sqrt(meter.samples.reduce((sum, x) => sum + x*x, 0) / meter.samples.length) * 5);
+    function applyNativeState(data) {
+      if (!data?.key || data.key === dismissedKey || (current && current.key !== data.key)) return;
+      if (data.phase === 'ended') {
+        if (current?.key === data.key) end({hide:false, message:data.error || '음성 대화가 종료되었습니다.'});
+        return;
+      }
+      if (!current) {
+        if (getState().live?.key !== data.key) return;
+        current = {key:data.key, scale:1, velocity:0}; show('live-dialog'); setSettings(false);
+        if (!document.hidden) animate(current);
+      }
+      current.connected = !!data.connected; current.muted = !!data.muted;
+      current.input = Number(data.input) || 0; current.output = Number(data.output) || 0;
+      if (data.threadId) current.localThread = data.threadId;
+      if (data.userCaption !== undefined) $('live-caption-user').textContent = data.userCaption;
+      if (data.assistantCaption !== undefined) $('live-caption-assistant').textContent = data.assistantCaption;
+      status(current.connected ? (current.muted ? '마이크 꺼짐' : '듣고 있어요') : '연결 중…');
+      update(); changed();
     }
     function animate(session) {
       if (current !== session) return;
-      const input = session.muted ? 0 : amplitude(session.inputMeter), output = amplitude(session.outputMeter);
+      const input = session.muted ? 0 : session.input || 0, output = session.output || 0;
       const target = 1 + Math.max(input, output) * .2;
       session.velocity = (session.velocity + (target - session.scale) * .24) * .66;
       session.scale += session.velocity;
@@ -123,46 +135,15 @@
       try {
         await loadVoices(); if (current !== session) return;
         await call('live.microphone', {key:session.key}); if (current !== session) return;
-        if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) throw new Error(t('이 Android WebView는 실시간 음성을 지원하지 않습니다.'));
-        const stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true, noiseSuppression:true, autoGainControl:true}, video:false});
-        if (current !== session) { stream.getTracks().forEach(track => track.stop()); return; }
-        session.stream = stream;
-        session.context = new AudioContext(); await session.context.resume();
-        if (current !== session) { release(session); return; }
-        session.inputMeter = meter(session.context, stream);
-        const pc = session.pc = new RTCPeerConnection();
-        const audio = session.audio = new Audio(); audio.autoplay = true;
-        pc.ontrack = event => {
-          if (current !== session) return;
-          const remote = event.streams[0] || new MediaStream([event.track]);
-          audio.srcObject = remote; session.outputMeter = meter(session.context, remote);
-          audio.play().catch(error => fail(session, error));
-        };
-        pc.onconnectionstatechange = () => {
-          if (current !== session) return;
-          if (pc.connectionState === 'connected') {
-            session.connected = true; clearTimeout(session.timeout); clearTimeout(session.disconnectTimer); session.disconnectTimer = null;
-            status('듣고 있어요'); update();
-          } else if (pc.connectionState === 'failed') fail(session, new Error(t('음성 연결이 끊겼습니다.')));
-          else if (pc.connectionState === 'disconnected') session.disconnectTimer ||= setTimeout(() => fail(session, new Error(t('음성 연결이 끊겼습니다.'))), 8000);
-        };
-        stream.getTracks().forEach(track => { pc.addTrack(track, stream); track.onended = () => fail(session, new Error(t('마이크 연결이 종료되었습니다.'))); });
-        const channel = session.channel = pc.createDataChannel('oai-events');
-        channel.onmessage = event => {
-          if (current !== session) return;
-          try { const data = JSON.parse(event.data); if (data.type === 'error') fail(session, new Error(data.error?.message || data.message || t('음성 연결 오류'))); } catch { /* Non-JSON transport data is ignored. */ }
-        };
-        await pc.setLocalDescription(await pc.createOffer());
-        if (current !== session) return;
-        session.timeout = setTimeout(() => fail(session, new Error(t('음성 연결 시간이 초과되었습니다.'))), 45000);
         animate(session);
-        const result = await call('live.start', {...options, key:session.key, sdp:pc.localDescription.sdp, voice, language, expectedThreadId, workspaceKey});
+        const result = await call('live.start', {...options, key:session.key, voice, language, expectedThreadId, workspaceKey});
         if (current !== session) { await call('live.stop', {key:session.key}); return; }
-        session.localThread = result.threadId;
+        session.localThread = result.threadId; applyNativeState(result);
       } catch (error) { fail(session, error); }
       finally { loading = false; update(); }
     }
     async function event(name, data) {
+      if (name === 'live.audio') { applyNativeState(data); return; }
       if (name === 'live.interrupted') {
         if (!data?.key || data.key === current?.key) await end({hide:false, message:'음성 대화가 중단되었습니다.'});
         return;
@@ -171,9 +152,7 @@
       const session = current;
       if (!session || session.key !== data.key) return;
       const params = data.params || {};
-      if (data.method === 'thread/realtime/sdp') {
-        try { await session.pc.setRemoteDescription({type:'answer', sdp:params.sdp}); } catch (error) { fail(session, error); }
-      } else if (data.method === 'thread/realtime/error') fail(session, new Error(params.message));
+      if (data.method === 'thread/realtime/error') fail(session, new Error(params.message));
       else if (data.method === 'thread/realtime/closed') end({hide:false, message:'음성 대화가 종료되었습니다.'});
       else if (data.method === 'thread/realtime/transcript/delta' || data.method === 'thread/realtime/transcript/done') {
         const role = params.role === 'user' ? 'user' : 'assistant', element = $('live-caption-' + role);
@@ -186,10 +165,10 @@
     $('live-retry').addEventListener('click', start);
     $('live-end').addEventListener('click', () => end());
     $('live-task-stop').addEventListener('click', () => call('chat.stop').catch(error => status(errorText(error))));
-    $('live-mute').addEventListener('click', () => {
-      if (!current?.stream) return;
-      current.muted = !current.muted; current.stream.getAudioTracks().forEach(track => track.enabled = !current.muted);
-      status(current.muted ? '마이크 꺼짐' : '듣고 있어요'); update();
+    $('live-mute').addEventListener('click', async () => {
+      const session = current; if (!session?.connected) return;
+      try { applyNativeState(await call('live.mute', {key:session.key, muted:!session.muted})); }
+      catch (error) { if (current === session) status(errorText(error)); }
     });
     $('live-text').addEventListener('input', update);
     $('live-text-form').addEventListener('submit', async e => {
@@ -215,8 +194,8 @@
       localStorage.setItem('live-voice', voice); localStorage.setItem('live-language', language);
       if (restart) { await end({hide:false}); await start(); } else setSettings(false);
     });
-    $('live-dialog').addEventListener('close', () => { if (current) end(); });
-    // Native foreground audio service owns background capture; hiding only stops drawing.
+    $('live-dialog').addEventListener('close', () => { if (current && !$('live-dialog').open) end(); });
+    // Hiding this page has no effect on native capture, playback, or connection timers.
     document.addEventListener('visibilitychange', () => {
       if (!current) return;
       cancelAnimationFrame(current.frame);

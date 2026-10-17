@@ -13,6 +13,8 @@ The APK bundles a pinned Android port of Codex:
 
 AndroidX Core 1.15.0 (Apache-2.0) supplies window-inset compatibility across Android versions. Java desugaring libraries are provided by the Android Open Source Project. Test-only dependencies include JUnit, AndroidX Test, Robolectric, org.json, jsdom, and Playwright, as declared in the Gradle/npm manifests. Their upstream license terms apply.
 
+Native Live audio uses `io.github.webrtc-sdk:android:150.7871.01`, distributed through Maven Central by https://github.com/webrtc-sdk/android/tree/v150.7871.01. WebRTC is BSD-3-Clause with additional bundled third-party licenses. The distributor's MIT license and complete WebRTC notices from that release are packaged in `assets/legal/WEBRTC-SDK-LICENSE` and `assets/legal/WEBRTC-LICENSES.md`.
+
 ## Original project code
 
 Original Mobile Codex code and original artwork are GPL-3.0-only (see LICENSE), copyright 2026 nokryong and contributors. Third-party components are not relicensed by this declaration. Third-party trademarks remain with their owners. The launcher uses an original antler-and-terminal design.
