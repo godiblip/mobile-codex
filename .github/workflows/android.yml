@@ -41,7 +41,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.reuse.outputs.reused != 'true'
         with:
-          node-version: '22'
+          node-version: '22.23.4'
           cache: npm
       - run: npm ci --ignore-scripts
         if: steps.reuse.outputs.reused != 'true'
@@ -101,7 +101,7 @@ jobs:
             gradle/wrapper/gradle-wrapper.properties
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '22.23.4'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           packages: 'platforms;android-35 build-tools;35.0.0'

@@ -4,6 +4,6 @@
   "private": true,
   "description": "Local project identity exchange for Mobile Codex",
   "bin": {"mobile-codex": "cli.cjs"},
-  "engines": {"node": ">=20"},
+  "engines": {"node": ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1 <27"},
   "license": "GPL-3.0-only"
 }

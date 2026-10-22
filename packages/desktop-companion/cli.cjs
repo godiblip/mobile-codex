@@ -3,7 +3,7 @@
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const p = require('./projects.cjs');
 const github = require('./github-sync.cjs');
-const HELP = `Mobile Codex desktop companion (Node.js 20+)
+const HELP = `Mobile Codex desktop companion (Node.js 22.23.4+, 24.22.1+, or 26.12.1+)
   node packages/desktop-companion/cli.cjs [--home <directory>] <command>
   init
   status
