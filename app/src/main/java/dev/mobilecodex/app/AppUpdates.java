@@ -21,10 +21,12 @@ import static dev.mobilecodex.app.core.Json.*;
 /** One app-owned operation at a time; network and APK hashing never occupy the model's work queue. */
 final class AppUpdates {
     interface InstallResult { void complete(File apk, Exception error); }
+    interface ReleaseSource { JSONArray read(String repository) throws Exception; }
     private final Context context;
     private final SharedPreferences prefs;
     private final File directory;
     private final Consumer<JSONObject> listener;
+    private final ReleaseSource releases;
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final AtomicBoolean cancelled=new AtomicBoolean();
     private volatile HttpURLConnection connection;
@@ -33,7 +35,11 @@ final class AppUpdates {
     private boolean busy, ready;
     private long received, revision;
     AppUpdates(Context context, Consumer<JSONObject> listener) {
+        this(context,listener,null);
+    }
+    AppUpdates(Context context, Consumer<JSONObject> listener, ReleaseSource releases) {
         this.context=context.getApplicationContext();this.listener=listener;prefs=context.getSharedPreferences("app-updates",0);directory=new File(context.getCacheDir(),"app-updates");
+        this.releases=releases!=null?releases:repo->new JSONArray(new String(readSmall("https://api.github.com/repos/"+repo+"/releases?per_page=20"),StandardCharsets.UTF_8));
         File[] partials=directory.listFiles((dir,name)->name.endsWith(".part"));
         if(partials!=null && partials.length>0){for(File partial:partials)partial.delete();message=t("이전 다운로드가 중단됐습니다. 업데이트를 다시 확인해 주세요.");}
         try {
@@ -70,12 +76,12 @@ final class AppUpdates {
         begin("checking",t("새 버전을 확인하는 중입니다…"));ready=false;candidate=null;
         final String repo=repository();final boolean pre=prefs.getBoolean("prereleases",true);
         worker.execute(()->{try{
-            byte[] bytes=readSmall("https://api.github.com/repos/"+repo+"/releases?per_page=20");
-            JSONObject found=UpdateCatalog.latest(new JSONArray(new String(bytes,StandardCharsets.UTF_8)),repo,pre);checkCancelled();
+            JSONObject found=UpdateCatalog.latest(releases.read(repo),repo,pre);checkCancelled();
             synchronized(this){
                 busy=false;candidate=found;
                 if(found==null){status="unavailable";message=t("설치 가능한 릴리스가 없습니다. ARM64 APK와 GitHub SHA-256 정보가 필요합니다.");}
                 else if(UpdateCatalog.compare(found.getString("versionName"),installed().versionName)<=0){status="upToDate";message=t("조회한 공개 릴리스보다 현재 앱이 같거나 최신입니다.");}
+                else if(apk().isFile() && apk().length()==found.getLong("size")){ready=true;status="ready";message=t("다운로드한 APK가 있습니다. 설치 전에 다시 검증합니다.");}
                 else{status="available";message=t("새 버전을 다운로드할 수 있습니다.");}
                 changed();
             }
