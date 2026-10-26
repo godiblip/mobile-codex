@@ -63,4 +63,44 @@ public class TerminalSessionTest {
             terminal.stop(fresh); await(() -> !terminal.busy());
         } finally { terminal.stop(null); }
     }
+
+    @Test public void blockedInputDoesNotPreventStateReadsOrStop() throws Exception {
+        CountDownLatch writing = new CountDownLatch(1), released = new CountDownLatch(1);
+        Process blocked = new Process() {
+            private volatile boolean alive = true;
+            private final OutputStream input = new OutputStream() {
+                @Override public void write(int value) throws IOException {
+                    writing.countDown();
+                    try { released.await(); }
+                    catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new IOException(error); }
+                    if (!alive) throw new IOException("process stopped");
+                }
+            };
+            @Override public OutputStream getOutputStream() { return input; }
+            @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
+            @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
+            @Override public boolean isAlive() { return alive; }
+            @Override public int waitFor() { return 0; }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) { return !alive; }
+            @Override public int exitValue() { return 0; }
+            @Override public void destroy() { alive = false; released.countDown(); }
+        };
+        TerminalSession terminal = new TerminalSession((name, data) -> {});
+        var process = TerminalSession.class.getDeclaredField("process"); process.setAccessible(true); process.set(terminal, blocked);
+        var id = TerminalSession.class.getDeclaredField("id"); id.setAccessible(true); id.set(terminal, "blocked");
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> input = workers.submit(() -> { try { terminal.input("blocked", "answer"); } catch (IOException stopped) {} });
+            assertTrue(writing.await(5, TimeUnit.SECONDS));
+            JSONObject snapshot = workers.submit(terminal::snapshot).get(2, TimeUnit.SECONDS);
+            assertEquals("blocked", snapshot.getString("id"));
+            workers.submit(() -> { terminal.stop("blocked"); return null; }).get(2, TimeUnit.SECONDS);
+            input.get(2, TimeUnit.SECONDS);
+            assertFalse(blocked.isAlive());
+        } finally {
+            blocked.destroy();
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
 }

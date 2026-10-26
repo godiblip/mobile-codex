@@ -12,6 +12,7 @@ import static dev.mobilecodex.app.core.Texts.t;
 public final class TerminalSession {
     public interface Events { void event(String name, JSONObject data); }
     private final Events events;
+    private final Object inputLock = new Object();
     private Process process;
     private String id = "";
     private long revision;
@@ -35,19 +36,26 @@ public final class TerminalSession {
         reader.setDaemon(true); reader.start();
         return snapshot();
     }
-    public synchronized JSONObject input(String expectedId, String text) throws IOException {
-        if (process == null || !process.isAlive() || stopping || !id.equals(expectedId))
-            throw new IOException(t("입력을 받을 터미널이 종료되거나 변경되었습니다."));
-        if (text.length() > 16384 || text.indexOf('\0') >= 0)
-            throw new IOException(t("터미널 입력이 너무 길거나 올바르지 않습니다."));
-        try {
-            // Always input to the same process; never interpret an answer as a new command.
-            process.getOutputStream().write((text.replaceAll("[\\r\\n]+$", "") + "\n").getBytes(StandardCharsets.UTF_8));
-            process.getOutputStream().flush();
-        } catch (IOException failure) {
-            throw new IOException(t("터미널에 입력을 보내지 못했습니다."));
+    public JSONObject input(String expectedId, String text) throws IOException {
+        synchronized (inputLock) {
+            Process target;
+            synchronized (this) {
+                if (process == null || !process.isAlive() || stopping || !id.equals(expectedId))
+                    throw new IOException(t("입력을 받을 터미널이 종료되거나 변경되었습니다."));
+                if (text.length() > 16384 || text.indexOf('\0') >= 0)
+                    throw new IOException(t("터미널 입력이 너무 길거나 올바르지 않습니다."));
+                target = process;
+            }
+            try {
+                // Pipe writes can block; keep state and output draining available while waiting.
+                // Retain the validated process so a replacement never receives an old reply.
+                target.getOutputStream().write((text.replaceAll("[\\r\\n]+$", "") + "\n").getBytes(StandardCharsets.UTF_8));
+                target.getOutputStream().flush();
+            } catch (IOException failure) {
+                throw new IOException(t("터미널에 입력을 보내지 못했습니다."));
+            }
+            return obj("ok", true);
         }
-        return obj("ok", true);
     }
     public void stop(String expectedId) throws IOException {
         Process target;
