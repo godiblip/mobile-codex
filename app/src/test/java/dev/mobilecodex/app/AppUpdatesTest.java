@@ -32,6 +32,41 @@ public class AppUpdatesTest {
     }
     @After public void cleanup(){updates.shutdown();}
     private File prepare()throws Exception{CompletableFuture<File> result=new CompletableFuture<>();updates.prepareInstall(candidate.getString("sha256"),(file,error)->{if(error==null)result.complete(file);else result.completeExceptionally(error);});return result.get(5,TimeUnit.SECONDS);}
+    private JSONObject release()throws Exception{
+        String version=candidate.getString("versionName"),name="mobile-codex-"+version+"-arm64.apk";
+        return obj("tag_name","v"+version,"prerelease",true,"assets",array(obj("name",name,"state","uploaded","size",candidate.getLong("size"),"digest","sha256:"+candidate.getString("sha256"),"browser_download_url","https://github.com/nokryong/mobile-codex/releases/download/v"+version+"/"+name)));
+    }
+    private JSONObject recheck(JSONObject release)throws Exception{
+        updates.shutdown();
+        context.getSharedPreferences("app-updates",0).edit().putString("downloaded",candidate.toString()).commit();
+        CompletableFuture<JSONObject> checked=new CompletableFuture<>();
+        updates=new AppUpdates(context,state->{if(!state.optBoolean("busy"))checked.complete(state);},repo->array(release));
+        updates.check();return checked.get(5,TimeUnit.SECONDS);
+    }
+    @Test public void recheckingKeepsMatchingDownloadedApkInstallable()throws Exception{
+        JSONObject state=recheck(release());
+        assertEquals("ready",state.getString("status"));assertTrue(state.getBoolean("ready"));
+        assertEquals(apk,prepare());
+    }
+    @Test public void recheckingRequiresDownloadForMissingTruncatedOrDifferentApk()throws Exception{
+        JSONObject release=release();
+        assertTrue(apk.delete());
+        assertEquals("available",recheck(release).getString("status"));assertFalse(updates.snapshot().getBoolean("ready"));
+        Files.write(apk.toPath(),new byte[]{1,2});
+        assertEquals("available",recheck(release).getString("status"));assertFalse(updates.snapshot().getBoolean("ready"));
+        Files.write(apk.toPath(),new byte[]{1,2,3,4});
+        release.getJSONArray("assets").getJSONObject(0).put("digest","sha256:"+"ab".repeat(32));
+        assertEquals("available",recheck(release).getString("status"));assertFalse(updates.snapshot().getBoolean("ready"));
+    }
+    @Test public void recheckingCachedApkStillChecksHashAndSignerBeforeInstalling()throws Exception{
+        Files.write(apk.toPath(),new byte[]{4,3,2,1});
+        assertTrue(recheck(release()).getBoolean("ready"));
+        assertThrows(ExecutionException.class,this::prepare);assertFalse(updates.snapshot().getBoolean("ready"));
+        Files.write(apk.toPath(),new byte[]{1,2,3,4});
+        Shadows.shadowOf(context.getPackageManager()).setPackageArchiveInfo(apk.getAbsolutePath(),archive("040506"));
+        assertTrue(recheck(release()).getBoolean("ready"));
+        assertThrows(ExecutionException.class,this::prepare);assertFalse(updates.snapshot().getBoolean("ready"));
+    }
     @Test public void rechecksApkAndLocksChangesUntilInstallerReturns()throws Exception{
         assertEquals(apk,prepare());assertEquals("installing",updates.snapshot().getString("status"));assertThrows(IOException.class,()->updates.configure("other/repo",true));assertThrows(IOException.class,updates::clear);
         updates.installEnded();assertFalse(updates.snapshot().getBoolean("busy"));assertTrue(updates.snapshot().getBoolean("ready"));
